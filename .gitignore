@@ -1,0 +1,20 @@
+# Solomon — never commit local data, secrets, or build artifacts.
+
+# macOS / editors
+.DS_Store
+.idea/
+*.swp
+
+# Backend runtime data (created automatically; may contain real tokens)
+backend/solomon
+backend/solomon.db*
+backend/uploads/
+backend/.env
+
+# Background-dev state
+.logs/
+.make.pids*
+
+# Frontend (also covered by frontend/.gitignore)
+frontend/node_modules/
+frontend/dist/
