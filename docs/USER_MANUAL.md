@@ -234,6 +234,34 @@ Each card shows:
 
 Threads show comma-joined IDs (`demo_twitter_…_0,demo_twitter_…_1,…`).
 
+### 7.1 Calendar view — see everything, move things
+
+The **Calendar** tab shows a month grid (Monday-first) with a dot per post per
+day: green = published, amber = scheduled/partial, red = failed, grey =
+unscheduled/natively-posted. Dead-dot days are dimmed native posts (see §8).
+
+- **Navigate:** ‹ Prev / Next ›, **Today**. Click any day to see its posts.
+- **Move a scheduled post:** drag it onto another day (desktop) — it keeps its
+  time of day — or set a new date/time in the day panel and click **move**.
+  Moving into the past asks for confirmation first: the backend publishes
+  anything due within ~15 seconds.
+- **Schedule a draft:** drag it from the **Unscheduled** tray onto a day
+  (lands at 09:00, keeping nothing else).
+- **Empty day:** clicking one jumps to Compose with that date prefilled at 09:00.
+- **Published posts don't move** (the past happened) — they offer **duplicate**
+  (loads text/targets into the composer as a draft; tweak the text and
+  re-attach media, since networks flag identical reposts as spam) and **delete**.
+
+### 7.2 Deleting posts — what really happens
+
+- **Scheduled / draft:** deleted forever from Solomon (nothing was published yet).
+- **Published:** removed from Solomon but **kept in Analytics with a `deleted`
+  badge** — your history stays intact. Network copies are NOT touched
+  (like Buffer/Hootsuite, Solomon doesn't un-publish): delete those natively
+  on each network if needed.
+- Deleting a post also untangles it from evergreen pools and frees media files
+  no other post uses.
+
 ## 8. Analytics tab — measuring results
 
 1. Open **Analytics**, click **↻ Refresh stats** (pulls latest numbers for every
@@ -245,6 +273,19 @@ Threads show comma-joined IDs (`demo_twitter_…_0,demo_twitter_…_1,…`).
    DEV manual §8).
 
 Your engagement history feeds back into Best-time suggestions (§6.7).
+
+### 8.1 Outside Solomon — posts you made natively
+
+Anything you posted directly on the networks (phone app, native scheduler)
+shows up here too: each **↻ Refresh stats** (plus an hourly background pass)
+discovers native posts per account — 30-day backfill, stats frozen 20 days
+after publishing, shown in their own **Outside Solomon** section with an
+`outside` badge and dimmed dots on past calendar days. They're read-only
+(no reschedule — they're the past) and excluded from app totals, but
+**included in Best-time suggestions**, because your real history makes them
+smarter. Notes: TikTok native discovery needs an audited app (skipped with a
+note); X metrics need a paid tier; demo accounts show realistic sample native
+posts.
 
 ## 9. Evergreen tab — bulk import & auto-recycling
 
@@ -349,6 +390,9 @@ Where to register apps & what to ask for:
 | CSV row skipped: no matching accounts | `accounts` column names must match account names/networks (case-insensitive, `;`-separated) |
 | Evergreen rule never runs | Backend must be running; first run is `interval_hours` after creation |
 | `no expiry` badge | Account predates expiry tracking → hit ↻ Refresh tokens once |
+| Moved post published instantly | You dropped it on a past date/time — anything due publishes within ~15s; the UI asks first, but confirming means now |
+| "only draft/scheduled can be rescheduled" | Published history is fixed → use **duplicate** on the calendar day panel |
+| Outside section empty | No native posts in the last 30 days, or the network needs extra setup (TikTok audited app, X user ID in External ID, board/author IDs in Extra) |
 | Blank page, or an error about `map`/`null` | Stale frontend build talking to an old backend → hard-refresh the browser (Cmd/Ctrl+Shift+R); if it persists, rebuild + restart: `cd frontend && npm run build`, then restart the backend |
 | `make stop` leaves a port busy | Kill by port directly, then start again: `lsof -ti:8080 \| xargs kill -9` (API) and `lsof -ti:5173 \| xargs kill -9` (web UI) |
 | Lost data? | Restore `backend/solomon.db` + `backend/uploads/` from backup |

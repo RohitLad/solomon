@@ -106,7 +106,8 @@ smoke: ## Full API smoke test (throwaway DB + port; never touches your data).
 	curl -sf -X POST $(SMOKE_URL)/api/ai/captions -H 'Content-Type: application/json' -d '{"text":"smoke test post","network":"twitter"}' >/dev/null && echo "captions: OK" && \
 	curl -sf "$(SMOKE_URL)/api/schedule/suggest?networks=twitter&count=1" >/dev/null && echo "suggest: OK" && \
 	LONG=$$(python3 -c "print('lorem ipsum dolor sit amet '*30)") && \
-	curl -sf -X POST $(SMOKE_URL)/api/posts -H 'Content-Type: application/json' -d "{\"content\":\"$$LONG\",\"publish_now\":true,\"targets\":[{\"account_id\":\"$$TW\"}]}" >/dev/null && echo "publish(thread): OK" && \
+	PUBID=$$(curl -sf -X POST $(SMOKE_URL)/api/posts -H 'Content-Type: application/json' -d "{\"content\":\"$$LONG\",\"publish_now\":true,\"targets\":[{\"account_id\":\"$$TW\"}]}" | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])") && \
+	[ -n "$$PUBID" ] || { echo "no published post returned"; exit 1; } && echo "publish(thread): OK ($$PUBID)" && \
 	curl -sf -X POST $(SMOKE_URL)/api/analytics/refresh >/dev/null && echo "analytics: OK" && \
 	printf 'title,content,link,scheduled_at,accounts\n"T1","Bulk one","https://example.com","","twitter"\n' > /tmp/solomon_smoke.csv && \
 	curl -sf -X POST $(SMOKE_URL)/api/posts/bulk -F "file=@/tmp/solomon_smoke.csv" >/dev/null && echo "bulk: OK" && \
@@ -114,6 +115,12 @@ smoke: ## Full API smoke test (throwaway DB + port; never touches your data).
 	[ -n "$$PID" ] || { echo "no posts returned"; exit 1; } && \
 	curl -sf -X POST $(SMOKE_URL)/api/evergreen -H 'Content-Type: application/json' -d "{\"name\":\"smoke\",\"pool_post_ids\":[\"$$PID\"],\"account_ids\":[\"$$TW\"],\"interval_hours\":24}" >/dev/null && echo "evergreen: OK" && \
 	curl -sf -X POST $(SMOKE_URL)/api/accounts/refresh >/dev/null && echo "tokens: OK" && \
+	DPID=$$(curl -sf -X POST $(SMOKE_URL)/api/posts -H 'Content-Type: application/json' -d "{\"content\":\"cal draft\",\"targets\":[{\"account_id\":\"$$TW\"}]}" | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])") && \
+	[ -n "$$DPID" ] || { echo "no draft post returned"; exit 1; } && \
+	curl -sf -X PATCH $(SMOKE_URL)/api/posts/$$DPID -H 'Content-Type: application/json' -d '{"scheduled_at":"2031-01-01T10:00:00Z"}' | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['status']=='scheduled' and '2031' in (d.get('scheduled_at') or ''), d" && echo "reschedule: OK" && \
+	curl -sf -X DELETE $(SMOKE_URL)/api/posts/$$DPID | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('soft_deleted') is False, d" && echo "delete(draft,hard): OK" && \
+	curl -sf -X DELETE $(SMOKE_URL)/api/posts/$$PUBID | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('soft_deleted') is True, d" && echo "delete(published,soft): OK" && \
+	curl -sf $(SMOKE_URL)/api/analytics | python3 -c "import json,sys;d=json.load(sys.stdin);rs=d['rows'];assert any(r.get('deleted') for r in rs),'no deleted row';assert any(r.get('external') for r in rs),'no external row';assert d.get('outside',{}).get('posts',0)>=1,'no outside totals'" && echo "analytics(history+outside): OK" && \
 	echo "SMOKE PASSED"
 
 LIVE_PORT := 18082

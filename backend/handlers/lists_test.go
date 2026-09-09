@@ -56,12 +56,15 @@ func newTestApp(t *testing.T) *testApp {
 	api.Post("/accounts/refresh", tokens.RefreshNow)
 	api.Get("/posts", posts.List)
 	api.Post("/posts", posts.Create)
+	api.Patch("/posts/:id", posts.Update)
 	api.Post("/posts/preview", posts.Preview)
+	api.Delete("/posts/:id", posts.Delete)
 	api.Post("/posts/bulk", bulk.Import)
 	api.Get("/schedule/suggest", schedule.Suggest)
 	api.Get("/analytics", analytics.List)
 	api.Post("/analytics/refresh", analytics.Refresh)
 	api.Get("/evergreen", evergreen.List)
+	api.Post("/evergreen", evergreen.Create)
 	return &testApp{app: app, db: database}
 }
 

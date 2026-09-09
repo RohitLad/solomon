@@ -25,10 +25,11 @@ cover both services at once — prefer those.
 
 ```
 src/
-  App.svelte            # all five tabs + all server-data wiring
+  App.svelte            # all six tabs + all server-data wiring
   main.ts / app.css     # mount + Tailwind + CSS-var token layer
   lib/api.ts            # typed API client (api.*) + NETWORKS pill meta
   lib/normalize.ts      # asArray/asRecord null-guards (+ normalize.test.ts)
+  lib/calendar.ts       # pure calendar helpers: monthGrid/groupByDay/dropDateTime (+ calendar.test.ts)
   lib/components/ui/    # Button, Card, Input, Textarea, Badge
 ```
 

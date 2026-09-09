@@ -19,7 +19,7 @@ func Start(db *gorm.DB, interval time.Duration) {
 	go func() {
 		for {
 			var due []models.Post
-			db.Where("status = ? AND scheduled_at IS NOT NULL AND scheduled_at <= ?",
+			db.Where("status = ? AND scheduled_at IS NOT NULL AND scheduled_at <= ? AND deleted_at IS NULL",
 				models.StatusScheduled, time.Now()).Find(&due)
 			for _, p := range due {
 				log.Printf("scheduler: publishing post %s", p.ID)
@@ -45,6 +45,12 @@ func Start(db *gorm.DB, interval time.Duration) {
 				log.Printf("scheduler: token refresh: %d ok, %d errors", n, len(errs))
 				for _, e := range errs {
 					log.Printf("scheduler: token refresh error: %s", e)
+				}
+			}
+			if d, notes := handlers.DiscoverExternal(db); d > 0 || len(notes) > 0 {
+				log.Printf("scheduler: outside-solomon: %d new, %d notes", d, len(notes))
+				for _, e := range notes {
+					log.Printf("scheduler: discover note: %s", e)
 				}
 			}
 		}

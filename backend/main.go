@@ -54,6 +54,7 @@ func main() {
 
 	api.Get("/posts", posts.List)
 	api.Post("/posts", posts.Create)
+	api.Patch("/posts/:id", posts.Update)
 	api.Post("/posts/preview", posts.Preview)
 	api.Delete("/posts/:id", posts.Delete)
 	api.Post("/upload", handlers.Upload(database))

@@ -40,7 +40,7 @@ and `README.md` (quick start).
   `net/http` — no OAuth library (see `networks/oauth.go`, `networks/tokens.go`).
 - **Frontend:** Svelte 5 + Vite, Tailwind v3 with shadcn-style CSS tokens, hand-rolled
   `ui/` primitives (Button/Card/Input/Textarea/Badge) mirroring shadcn-svelte,
-  one `App.svelte` with five tabs, typed `lib/api.ts` client.
+  one `App.svelte` with six tabs, typed `lib/api.ts` client.
 - **Concurrency model:** `PublishDuePost` fans out to targets with a goroutine per
   target + `sync.WaitGroup`, then rolls up post status
   (`published` / `partial` / `failed`).
@@ -65,11 +65,13 @@ solomon/
 │   ├── solomon.db               # created at runtime (gitignore in real use)
 │   ├── uploads/                 # created at runtime; served at /uploads/*
 │   ├── db/db.go                 # Connect(path): open SQLite + AutoMigrate 6 models
-│   ├── models/models.go         # Network enum + SocialAccount/Post/PostTarget/MediaAsset/
-│   │                            #   AnalyticsSnapshot/EvergreenRule (+ BeforeCreate UUIDs)
+│   ├── models/                  # one file per model (see doc.go for the map):
+│   │   │                            # network / social_account / media / post (+targets) /
+│   │   │                            # analytics / external / evergreen (+ BeforeCreate UUIDs)
 │   ├── networks/
 │   │   ├── limits.go            # ★ limits table + ValidateAndAdapt + SplitThread + TrimTo
 │   │   ├── publisher.go         # Publish dispatch + 7 network impls + extraField parser
+│   │   ├── discover.go          # ListRecentPosts per network (Outside Solomon, best-effort)
 │   │   ├── oauth.go             # AuthURL consent links per network
 │   │   ├── ai.go                # GenerateCaptions: offline templates → optional LLM
 │   │   ├── smart.go             # DefaultSlots best-time tables per network
@@ -77,7 +79,8 @@ solomon/
 │   │   └── tokens.go            # RefreshToken per-network OAuth refresh grants
 │   ├── handlers/
 │   │   ├── accounts.go          # List/Create/Delete/AuthURL/Limits
-│   │   ├── posts.go             # List/Create (publish_now/auto_schedule)/Preview/Delete + bestSlotFor hookup
+│   │   ├── posts.go             # List/Create/PATCH-reschedule/Preview/Delete (split semantics §3.2)
+│   │   ├── discover.go          # DiscoverExternal worker (native posts, Buffer-parity caps)
 │   │   ├── upload.go            # multipart → MediaAsset rows (+ UploadDir, /uploads static)
 │   │   ├── publish.go           # PublishDuePost: validate→skip-or-publish fan-out + rollup
 │   │   ├── ai.go                # POST /api/ai/captions
@@ -85,18 +88,22 @@ solomon/
 │   │   ├── analytics.go         # GET /api/analytics + POST /api/analytics/refresh + RefreshAll
 │   │   ├── tokens.go            # GET /api/accounts/expiring + POST /api/accounts/refresh + RefreshDueAccounts
 │   │   ├── bulk.go              # POST /api/posts/bulk (CSV) + evergreen CRUD + RunDueRules
-│   │   └── lists_test.go        # ★ empty-DB contract: every list returns [], never null
-│   └── scheduler/scheduler.go   # Start(): 3 goroutines — 15s posts, 60s evergreen, 1h tokens
+│   │   ├── lists_test.go        # ★ empty-DB contract: every list returns [], never null
+│   │   ├── calendar_test.go     # ★ PATCH/delete/evergreen/deleted-guard contract tests
+│   │   └── discover_test.go     # ★ outside-discovery contract tests (dedupe/caps/freeze/union)
+│   └── scheduler/scheduler.go   # Start(): 4 goroutines — 15s posts, 60s evergreen, 1h tokens+discovery
 └── frontend/
     ├── package.json / vite.config.ts   # vite + svelte plugin; dev proxy /api,/uploads → :8080
     ├── tailwind.config.js / postcss.config.js
     ├── index.html
     └── src/
         ├── main.ts / app.css    # mount + Tailwind + shadcn token layer
-        ├── App.svelte           # 5 tabs: Compose / Queue / Analytics / Evergreen / Accounts
-        ├── lib/api.ts           # types (Account/Post/…) + api.* client (21 methods) + NETWORKS meta
+        ├── App.svelte           # 6 tabs: Compose / Queue / Calendar / Analytics / Evergreen / Accounts
+        ├── lib/api.ts           # types (Account/Post/…) + api.* client (22 methods) + NETWORKS meta
         ├── lib/normalize.ts     # ★ asArray/asRecord null-guards for every list payload
         │                        #   (+ normalize.test.ts, run with `npm run test` / vitest)
+        ├── lib/calendar.ts      # ★ pure calendar helpers: monthGrid/groupByDay/dropDateTime/dotClass
+        │                        #   (+ calendar.test.ts) — App.svelte stays thin
         ├── lib/Counter.svelte   # vite scaffold leftover (unused, safe to delete)
         └── lib/components/ui/   # Button, Card, Input, Textarea, Badge (shadcn-style)
 ```
@@ -125,6 +132,15 @@ solomon/
   Note: targets already `published` are skipped on re-run (idempotent-ish retries).
 - **Preview (`POST /api/posts/preview`):** same validation, no writes; returns per-target
   `{account_id, network, text, plan{ok, adaptations[], errors[]}}` + full limits map.
+- **Reschedule (`PATCH /api/posts/:id {scheduled_at}`):** draft/scheduled only
+  (404 unknown, 400 published/partial/failed/deleted — duplicate instead);
+  null clears to draft, datetime sets scheduled. Past datetimes allowed (the
+  15s scheduler publishes them at once; UI confirms).
+- **Delete (split semantics):** draft/scheduled → HARD delete (target/media
+  rows, unreferenced media files, evergreen-pool prune). Published/partial/
+  failed → SOFT delete (`deleted_at` set; targets/snapshots/media KEPT for
+  analytics history with a `deleted` badge). Network copies are NEVER touched
+  (industry standard — Buffer/Hootsuite don't un-publish either).
 - **Upload:** multipart field `files`; extension allowlist
   (images: jpg/jpeg/png/gif/webp; video: mp4/mov/webm/mkv); stored
   `<unixnano>_<8hex><ext>`; row created with empty `post_id` until attached.
@@ -154,7 +170,9 @@ Tokens are stripped (`""`) in every JSON response — grep for `AccessToken, …
 before adding new serializers.
 
 **posts:** `id PK, title, content, link, scheduled_at NULL, status (draft/scheduled/
-published/partial/failed), post_type (reserved), created_at, updated_at`.
+published/partial/failed), deleted_at NULL (index; soft-delete for published history),
+post_type (reserved), created_at, updated_at`. List hides `deleted_at IS NOT NULL`
+unless `?include_deleted=1`.
 
 **post_targets:** `id PK, post_id (index), account_id (index), custom_text,
 first_comment, status (pending/published/failed/skipped), network_post_id
@@ -163,8 +181,13 @@ first_comment, status (pending/published/failed/skipped), network_post_id
 **media_assets:** `id PK, post_id (index), file_path (local path), media_type
 (image/video), sort_order`.
 
-**analytics_snapshots:** `id PK, target_id (index), network_post_id, views, likes,
-comments, shares, is_demo, fetched_at`. Append-only; "latest" = `ORDER BY fetched_at DESC LIMIT 1`.
+**analytics_snapshots:** `id PK, target_id (index), external_post_id NULL (index),
+network_post_id, views, likes, comments, shares, is_demo, fetched_at`. Append-only;
+"latest" = `ORDER BY fetched_at DESC LIMIT 1`. Exactly one of target/external set.
+
+**external_posts:** `id PK, account_id (index), network, network_post_id`
+(unique per account), `text, permalink, published_at (index), last_stats_at, created_at`.
+Native posts discovered per account (read-only: analytics + calendar dots).
 
 **evergreen_rules:** `id PK, name, pool_post_ids (JSON []postID), account_ids
 (JSON []accountID), interval_hours, cursor, active, last_run_at, next_run_at, created_at`.
@@ -190,16 +213,17 @@ white-screen.
 | `GET /api/accounts/:network/auth-url` | — | `{"auth_url"}` (see §10) |
 | `GET /api/accounts/expiring` | — | accounts with `expires_at` NULL or ≤ now+7d |
 | `POST /api/accounts/refresh` | — | `{"refreshed":n, "errors":[]}` |
-| `GET /api/posts?status=` | optional status filter | `Post[]` (targets+account, media), newest first |
+| `GET /api/posts?status=` | optional status filter (+ `?include_deleted=1` reveals soft-deleted) | `Post[]` (targets+account, media), newest first |
 | `POST /api/posts` | `{title, content*, link, scheduled_at, publish_now, auto_schedule, media_ids[], targets[]:{account_id*, custom_text, first_comment}}` | `201 Post` (with targets; publish_now runs synchronously) |
+| `PATCH /api/posts/:id` | `{scheduled_at}` (null clears to draft) — draft/scheduled only | updated `Post` (404 unknown, 400 published/deleted) |
 | `POST /api/posts/preview` | `{title, content, link, media_types[], targets[]}` | `{targets[]:{account_id,network,text,plan}, limits}` |
-| `DELETE /api/posts/:id` | — | deletes targets+media rows+post, `{"ok":true}` |
+| `DELETE /api/posts/:id` | — | draft/scheduled: hard delete; published: soft delete `{ok, soft_deleted}` |
 | `POST /api/upload` | multipart `files` | `201 MediaAsset[]` |
 | `POST /api/posts/bulk[?auto_schedule=1]` | multipart `file` (.csv) | `{created, skipped, errors[]}` |
 | `POST /api/ai/captions` | `{text*, network}` | `{variants[]:{tone,text,hashtags}, source, limits}` |
 | `GET /api/schedule/suggest?networks=&count=` | csv networks (default all), count 1–20 (default 3) | `{suggestions[]:{at, score, networks, reason}}` |
-| `GET /api/analytics` | — | `{totals:{views,likes,comments,shares,posts}, rows[]}` |
-| `POST /api/analytics/refresh` | — | `{"refreshed":n, "errors":[]}` |
+| `GET /api/analytics` | — | `{totals, outside:{views,likes,comments,shares,posts}, rows[]}` (rows carry `deleted`/`external` flags; external rows add `text`/`published_at`) |
+| `POST /api/analytics/refresh` | — | `{"refreshed":n, "discovered":m, "errors":[]}` (also runs Outside discovery) |
 | `GET /api/evergreen` | — | `EvergreenRule[]` newest first |
 | `POST /api/evergreen` | `{name*, pool_post_ids[]*, account_ids[]*, interval_hours}` (default 24) | `201 Rule` (`next_run_at = now+interval`) |
 | `DELETE /api/evergreen/:id` | — | `{"ok":true}` |
@@ -225,6 +249,13 @@ One concern per file; **start here when an API changes upstream.**
   `AI_API_KEY` + `AI_BASE_URL` (default OpenAI chat-completions) + `AI_MODEL`
   (default `gpt-4o-mini`), expects JSON array, tolerant fence-stripping; **any failure
   falls back to offline templates** (never 500s the UI).
+- **`discover.go`** — `ListRecentPosts(network, token, extra, externalID, since, limit)`
+  for Outside-Solomon discovery. Demo/empty tokens → deterministic `fnv`
+  pseudo-posts. Real paths: FB page posts, IG media, X user timeline (needs
+  numeric user ID in External ID), YT uploads playlist (+1 batched titles call),
+  LinkedIn ugcPosts (needs `author_urn`), Pinterest board pins (needs `board_id`).
+  TikTok returns "needs audited app" (caller skips with a note). Missing IDs or
+  scopes are errors, never panics — the worker treats them as per-account notes.
 - **`smart.go`** — `DefaultSlots(network) → []Slot{weekday(0=Sun), hour, score 1–3}`.
 - **`stats.go`** — `FetchStats(network, token, postID) → Stats`. Demo = `fnv` hash
   pseudo-stats (stable per post ID). Live: IG insights parsed (`reach/likes/comments/shares/saved`);
@@ -237,11 +268,11 @@ One concern per file; **start here when an API changes upstream.**
 
 ## 7. Scheduler workers
 
-`Start(db, interval)` spawns three goroutines (no graceful shutdown — fine for v1):
+`Start(db, interval)` spawns four goroutines (no graceful shutdown — fine for v1):
 
-1. **Due posts** every `interval` (15s from main): `status=scheduled AND scheduled_at<=now` → `PublishDuePost`.
-2. **Evergreen** every 60s: `handlers.RunDueRules(db)` (active + `next_run_at<=now`).
-3. **Tokens** every 1h: `handlers.RefreshDueAccounts(db)` (expiry NULL or ≤ now+7d), logs counts/errors.
+1. **Due posts** every `interval` (15s from main): `status=scheduled AND scheduled_at<=now AND deleted_at IS NULL` → `PublishDuePost`.
+2. **Evergreen** every 60s: `handlers.RunDueRules(db)` (active + `next_run_at<=now`; pool filtered to live posts, cursor advances past missing/deleted).
+3. **Tokens + discovery** every 1h: `handlers.RefreshDueAccounts(db)` (expiry NULL or ≤ now+7d), then `handlers.DiscoverExternal(db)` (native posts: 30d backfill, ≤100/account, stats frozen after 20d, app IDs deduped).
 
 ## 8. Frontend deep dive
 
@@ -255,10 +286,17 @@ One concern per file; **start here when an API changes upstream.**
 - **`App.svelte`** — state: `tab`, `accounts/posts/limits`, compose bundle
   (`title/content/link/scheduledAt/selected/customText/firstComment/showCustom/mediaIds/mediaTypes/preview`),
   AI (`variants/variantSource`), smart (`suggestions`), accounts (`newNet/newName/newToken/newExtra/expiringIds`),
-  analytics (`totals/arows`), evergreen (`rules/ruleName/ruleHours/rulePool/ruleAccts/bulkResult`).
-  Derived: `selectedIds`, `selectedNets`, `charCount` (rune-spread `[...content]`).
-  `switchTab` lazy-loads analytics/evergreen/expiring. `datetime-local` ↔ ISO conversion
-  pads local components. `onBulk(e, auto)` posts CSV `FormData`.
+  analytics (`totals/outside/arows`), evergreen (`rules/ruleName/ruleHours/rulePool/ruleAccts/bulkResult`),
+  calendar (`calYear/calMonth/calDay/dragPost/confirmDelete/calMove`), notices (`notice`).
+  Derived: `selectedIds`, `selectedNets`, `charCount` (rune-spread `[...content]`),
+  `calGrid/calByDay/calExtByDay/calDrafts/calDayPosts/calDayExt` (pure helpers in
+  `lib/calendar.ts` — keep date logic there, testable without Svelte).
+  `switchTab` lazy-loads analytics/evergreen/expiring (+ analytics for calendar dots).
+  `datetime-local` ↔ ISO conversion pads local components. `onBulk(e, auto)` posts CSV `FormData`.
+  Delete flow is two-step (`askDelete` → inline confirm → `doDelete`); past-date
+  moves use a native `confirm()`; duplicate loads text/targets into compose only
+  (media re-attached by hand — same rows would be *moved*, and networks flag
+  identical reposts as spam).
 - **`ui/` primitives** — prop-driven (`variant/tone`), Tailwind classes on CSS-var
   tokens from `app.css` (`--background/--primary/…` + `.dark`); add new primitives here.
 - **Vite proxy** (`vite.config.ts`): `/api` + `/uploads` → `localhost:8080`, so the
@@ -347,7 +385,8 @@ Three layers, fastest first:
    `normalize.test.ts` pins the null-payload guards). Run before every commit.
 2. **Mock e2e — `make smoke`.** Serves a throwaway DB on `:18081`, runs the full
    flow below (account → captions → suggest → threaded publish → analytics →
-   bulk → evergreen → token refresh), prints `SMOKE PASSED`. Steps are
+   bulk → evergreen → token refresh → draft reschedule (PATCH) → hard delete →
+   soft delete → history+outside analytics assertions), prints `SMOKE PASSED`. Steps are
    `&&`-chained with a trap teardown: the first failure aborts (no false
    passes) and the temp server/DB is always cleaned up.
 3. **Live-fire — `make smoke-live`.** The twin against real tokens (see below):
@@ -443,6 +482,10 @@ Raw equivalents: `cd backend && go run .` (:8080), `cd frontend && npm run dev`
   guard it — handlers initialize every list before `c.JSON` (see `lists_test.go`),
   and UI code wraps every list payload in `asArray()`/`asRecord()` from
   `lib/normalize.ts` (see `normalize.test.ts`). New list endpoint? Do both.
+- **No un-publish, by design:** schedulers (Buffer/Hootsuite included) don't
+  delete published network posts. Solomon follows: published deletes are
+  in-app history (`deleted_at` + badge), network copies are removed natively.
+  Don't add a `networks.Delete` without re-reading this thread.
 - **Makefile chains are fail-fast:** `smoke`/`smoke-live` join steps with `&&`
   plus a trap teardown — a failed step aborts the run (and, for smoke-live,
   aborts BEFORE any live publish) while still killing the temp server and

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"os"
 	"strings"
 	"time"
 
@@ -19,6 +20,11 @@ func (h *PostHandler) List(c *fiber.Ctx) error {
 	q := h.DB.Preload("Targets.Account").Preload("Media").Order("created_at desc")
 	if s := c.Query("status"); s != "" {
 		q = q.Where("status = ?", s)
+	}
+	// Soft-deleted (published-then-removed) posts are hidden by default;
+	// ?include_deleted=1 reveals them (analytics history lives on the rows).
+	if c.Query("include_deleted") != "1" {
+		q = q.Where("deleted_at IS NULL")
 	}
 	if err := q.Find(&posts).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -150,12 +156,80 @@ func (h *PostHandler) Preview(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"targets": rows, "limits": networks.Limits()})
 }
 
+// Update reschedules a draft/scheduled post (calendar drag-drop + day panel).
+// PATCH /api/posts/:id  {scheduled_at: <RFC3339|null>}
+// null clears the date (back to draft); a datetime sets status=scheduled.
+// Published/partial/failed/deleted posts are rejected — duplicate them instead.
+// A past datetime is accepted (the 15s scheduler publishes it almost at once);
+// the UI confirms that case explicitly.
+func (h *PostHandler) Update(c *fiber.Ctx) error {
+	id := c.Params("id")
+	var post models.Post
+	if err := h.DB.First(&post, "id = ?", id).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "post not found"})
+	}
+	if post.DeletedAt != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "post is deleted"})
+	}
+	if post.Status != models.StatusDraft && post.Status != models.StatusScheduled {
+		return c.Status(400).JSON(fiber.Map{"error": "only draft/scheduled posts can be rescheduled — duplicate a published post instead"})
+	}
+	var in struct {
+		ScheduledAt *time.Time `json:"scheduled_at"`
+	}
+	if err := c.BodyParser(&in); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	updates := map[string]any{"scheduled_at": in.ScheduledAt, "status": models.StatusScheduled}
+	if in.ScheduledAt == nil {
+		updates["status"] = models.StatusDraft
+	}
+	if err := h.DB.Model(&post).Updates(updates).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	var out models.Post
+	h.DB.Preload("Targets.Account").Preload("Media").First(&out, "id = ?", post.ID)
+	if out.Targets == nil {
+		out.Targets = []models.PostTarget{}
+	}
+	if out.Media == nil {
+		out.Media = []models.MediaAsset{}
+	}
+	return c.JSON(out)
+}
+
 func (h *PostHandler) Delete(c *fiber.Ctx) error {
 	id := c.Params("id")
+	var post models.Post
+	if err := h.DB.First(&post, "id = ?", id).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "post not found"})
+	}
+	// Published history is KEPT (soft delete): targets/snapshots stay for
+	// analytics, shown with a "deleted" badge. Network copies are NOT touched —
+	// delete those natively (industry standard: schedulers don't un-publish).
+	if post.Status == models.StatusPublished || post.Status == models.StatusPartial || post.Status == models.StatusFailed {
+		now := time.Now()
+		if err := h.DB.Model(&post).Update("deleted_at", &now).Error; err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"ok": true, "soft_deleted": true})
+	}
+	// Draft/scheduled: nothing published yet, so hard delete is safe.
+	PrunePostFromEvergreen(h.DB, id)
+	var media []models.MediaAsset
+	h.DB.Where("post_id = ?", id).Find(&media)
 	h.DB.Delete(&models.PostTarget{}, "post_id = ?", id)
 	h.DB.Delete(&models.MediaAsset{}, "post_id = ?", id)
 	if err := h.DB.Delete(&models.Post{}, "id = ?", id).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"ok": true})
+	// Remove files no other post references (evergreen copies share FilePath).
+	for _, m := range media {
+		var n int64
+		h.DB.Model(&models.MediaAsset{}).Where("file_path = ?", m.FilePath).Count(&n)
+		if n == 0 {
+			_ = os.Remove(m.FilePath)
+		}
+	}
+	return c.JSON(fiber.Map{"ok": true, "soft_deleted": false})
 }

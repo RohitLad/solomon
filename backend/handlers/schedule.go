@@ -177,15 +177,16 @@ func engagementBoost(db *gorm.DB, nets []models.Network) map[struct{ wd, hr int 
 	// sum latest snapshot per target
 	var targets []models.PostTarget
 	db.Where("status = ? AND published_at IS NOT NULL", models.TargetPublished).Find(&targets)
-	if len(targets) == 0 {
-		return nil
-	}
+	deleted := deletedPostIDs(db)
 	netSet := map[models.Network]bool{}
 	for _, n := range nets {
 		netSet[n] = true
 	}
 	agg := map[struct{ wd, hr int }][]int64{}
 	for _, t := range targets {
+		if deleted[t.PostID] {
+			continue // deleted means disowned: don't steer future scheduling
+		}
 		var acct models.SocialAccount
 		if err := db.First(&acct, "id = ?", t.AccountID).Error; err != nil || !netSet[acct.Network] {
 			continue
@@ -198,6 +199,24 @@ func engagementBoost(db *gorm.DB, nets []models.Network) map[struct{ wd, hr int 
 		s := snaps[0]
 		eng := s.Likes + s.Comments + s.Shares
 		k := struct{ wd, hr int }{int(t.PublishedAt.Weekday()), t.PublishedAt.Hour()}
+		agg[k] = append(agg[k], eng)
+	}
+	// Outside Solomon: native history steers best-time too (it's your real
+	// engagement, and the reason external rows exist in analytics).
+	var ext []models.ExternalPost
+	db.Find(&ext)
+	for _, e := range ext {
+		if !netSet[e.Network] || e.PublishedAt == nil {
+			continue
+		}
+		var snaps []models.AnalyticsSnapshot
+		db.Where("external_post_id = ?", e.ID).Order("fetched_at desc").Limit(1).Find(&snaps)
+		if len(snaps) == 0 {
+			continue
+		}
+		s := snaps[0]
+		eng := s.Likes + s.Comments + s.Shares
+		k := struct{ wd, hr int }{int(e.PublishedAt.Weekday()), e.PublishedAt.Hour()}
 		agg[k] = append(agg[k], eng)
 	}
 	type kv struct {

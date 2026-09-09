@@ -13,8 +13,14 @@ export interface PostTarget {
 }
 export interface Post {
   id: string; title: string; content: string; link: string;
-  scheduled_at: string | null; status: string;
+  scheduled_at: string | null; status: string; deleted_at: string | null;
   targets: PostTarget[]; media: MediaAsset[]; created_at: string;
+}
+export interface AnalyticsRow {
+  target_id: string; post_id: string; network: Network; account_name: string;
+  network_post_id: string; views: number; likes: number; comments: number;
+  shares: number; is_demo: boolean; deleted: boolean;
+  external: boolean; text?: string; published_at?: string | null;
 }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -34,9 +40,11 @@ export const api = {
   posts: (status = '') => req<Post[]>(`/api/posts${status ? `?status=${status}` : ''}`),
   createPost: (body: object) =>
     req<Post>('/api/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  updatePost: (id: string, body: object) =>
+    req<Post>(`/api/posts/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   preview: (body: object) =>
     req<any>('/api/posts/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-  deletePost: (id: string) => req<{ ok: boolean }>(`/api/posts/${id}`, { method: 'DELETE' }),
+  deletePost: (id: string) => req<{ ok: boolean; soft_deleted: boolean }>(`/api/posts/${id}`, { method: 'DELETE' }),
   upload: async (files: FileList): Promise<MediaAsset[]> => {
     const fd = new FormData();
     for (const f of files) fd.append('files', f);
@@ -50,8 +58,8 @@ export const api = {
   suggest: (networks: string[], count = 3) =>
     req<{ suggestions: { at: string; score: number; networks: string[]; reason: string }[] }>(
       `/api/schedule/suggest?networks=${networks.join(',')}&count=${count}`),
-  analytics: () => req<{ totals: any; rows: any[] }>('/api/analytics'),
-  refreshAnalytics: () => req<{ refreshed: number; errors: string[] }>('/api/analytics/refresh', { method: 'POST' }),
+  analytics: () => req<{ totals: any; outside?: any; rows: AnalyticsRow[] }>('/api/analytics'),
+  refreshAnalytics: () => req<{ refreshed: number; discovered: number; errors: string[] }>('/api/analytics/refresh', { method: 'POST' }),
   expiring: () => req<Account[]>('/api/accounts/expiring'),
   refreshTokens: () => req<{ refreshed: number; errors: string[] }>('/api/accounts/refresh', { method: 'POST' }),
   bulkImport: async (file: File, auto = false) => {

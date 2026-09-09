@@ -42,13 +42,17 @@ backend/
     oauth.go              # OAuth consent-URL per network
   handlers/
     accounts.go posts.go upload.go publish.go ai.go schedule.go analytics.go tokens.go bulk.go
+    discover.go           # Outside-Solomon native-post discovery worker
     lists_test.go         # ★ empty-DB contract: every list returns [], never null
-  scheduler/scheduler.go  # 15s ticker publishing due posts (+60s evergreen, 1h tokens)
+    calendar_test.go      # ★ PATCH/delete/evergreen/deleted-guard contract tests
+    discover_test.go      # ★ outside-discovery contract tests (dedupe/caps/freeze/union)
+  scheduler/scheduler.go  # 15s posts + 60s evergreen + 1h tokens/discovery tickers
 frontend/
-  src/lib/api.ts          # typed API client (21 methods)
+  src/lib/api.ts          # typed API client (22 methods)
   src/lib/normalize.ts    # ★ asArray/asRecord: null-safe guards for every list payload (+ tests)
+  src/lib/calendar.ts     # ★ pure calendar helpers: monthGrid/groupByDay/dropDateTime (+ tests)
   src/lib/components/ui/  # Button/Card/Input/Textarea/Badge (shadcn-svelte style)
-  src/App.svelte          # Compose / Queue / Analytics / Evergreen / Accounts tabs
+  src/App.svelte          # Compose / Queue / Calendar / Analytics / Evergreen / Accounts tabs
 ```
 
 ## How the requested features map
@@ -110,6 +114,20 @@ GET  POST /api/evergreen   DELETE /api/evergreen/:id  (recycled every interval_h
 5. **Bulk & evergreen** — Evergreen tab: CSV import (accounts matched by name or
    network, `;`-separated) with optional 3h-spaced auto-schedule; rules recycle a pool
    of posts round-robin to chosen accounts every N hours (scheduler runs due rules).
+
+## New in v3 — calendar, honest delete, Outside Solomon
+
+6. **Calendar** — month grid with per-day status dots, drag-to-reschedule
+   (keeps time of day; past drops confirm since due posts publish in ~15s),
+   unscheduled-drafts tray, click-empty-day to compose, duplicate-with-edit-nudge.
+   `PATCH /api/posts/:id` powers moves (draft/scheduled only).
+7. **Honest delete** — scheduled/drafts delete forever; published posts are
+   removed from Solomon but kept in Analytics with a `deleted` badge (network
+   copies are never touched — industry standard).
+8. **Outside Solomon** — native posts made outside the app are discovered per
+   account (manual refresh + hourly; 30-day backfill, stats frozen after 20d),
+   shown in their own Analytics section and as dimmed calendar dots, and feed
+   the Best-time boost with your real history.
 
 ## Suggested next features (tell me which to build)
 

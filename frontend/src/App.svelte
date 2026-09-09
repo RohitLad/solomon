@@ -7,12 +7,14 @@
   import Textarea from './lib/components/ui/Textarea.svelte';
   import Badge from './lib/components/ui/Badge.svelte';
   import { asArray, asRecord } from './lib/normalize';
+  import { monthGrid, dayKey, todayKey, groupByDay, effectiveDate, isMovable, dropDateTime, monthLabel, dotClass, externalToDated } from './lib/calendar';
 
-  let tab: 'compose' | 'scheduled' | 'analytics' | 'evergreen' | 'accounts' = 'compose';
+  let tab: 'compose' | 'scheduled' | 'calendar' | 'analytics' | 'evergreen' | 'accounts' = 'compose';
   let accounts: Account[] = [];
   let posts: Post[] = [];
   let limits: Record<string, any> = {};
   let error = '';
+  let notice = '';
 
   // --- compose state ---
   let title = '';
@@ -42,7 +44,16 @@
 
   // --- analytics ---
   let totals: any = null;
+  let outside: any = null;
   let arows: any[] = [];
+
+  // --- calendar + delete state ---
+  let calYear = 0;
+  let calMonth = 0;
+  let calDay: string | null = null;
+  let dragPost: string | null = null;
+  let confirmDelete: string | null = null;
+  let calMove: Record<string, string> = {};
 
   // --- evergreen + bulk ---
   let rules: any[] = [];
@@ -143,7 +154,7 @@
 
   async function loadAnalytics() {
     const r = await api.analytics();
-    totals = r.totals; arows = asArray(r.rows);
+    totals = r.totals; outside = (r as any).outside ?? null; arows = asArray(r.rows);
   }
 
   async function loadEvergreen() {
@@ -170,10 +181,91 @@
   function tone(s: string) { return s === 'published' ? 'green' : s === 'failed' ? 'red' : s === 'partial' || s === 'scheduled' ? 'amber' : 'default'; }
   function switchTab(t: typeof tab) {
     tab = t;
+    notice = '';
+    if (t === 'calendar') {
+      if (!calYear) { const n = new Date(); calYear = n.getFullYear(); calMonth = n.getMonth(); calDay = todayKey(); }
+      refresh();
+      loadAnalytics();
+    }
     if (t === 'analytics') loadAnalytics();
     if (t === 'evergreen') { loadEvergreen(); refresh(); }
     if (t === 'accounts') refresh();
   }
+
+  // --- calendar actions ---
+  function calShift(dm: number) {
+    calMonth += dm;
+    if (calMonth < 0) { calMonth = 11; calYear--; }
+    if (calMonth > 11) { calMonth = 0; calYear++; }
+  }
+  function calToday() { const n = new Date(); calYear = n.getFullYear(); calMonth = n.getMonth(); calDay = todayKey(); }
+
+  async function movePost(id: string, iso: string | null) {
+    const p = posts.find((x) => x.id === id);
+    if (!p || !isMovable(p)) { error = 'Only draft/scheduled posts can be moved.'; return; }
+    if (iso && new Date(iso).getTime() < Date.now()) {
+      if (!confirm('This date is in the past — the post will publish within seconds. Move anyway?')) return;
+    }
+    busy = true; error = '';
+    try {
+      await api.updatePost(id, { scheduled_at: iso });
+      await refresh();
+    } catch (e: any) { error = e.message; }
+    busy = false;
+  }
+
+  function dropOnDay(day: Date | null) {
+    if (!day || !dragPost) return;
+    const p = posts.find((x) => x.id === dragPost);
+    dragPost = null;
+    if (!p) return;
+    void movePost(p.id, dropDateTime(day, p));
+  }
+
+  function composeOnDay(day: Date | null) {
+    const d = day ?? new Date();
+    const q = (n: number) => String(n).padStart(2, '0');
+    scheduledAt = `${d.getFullYear()}-${q(d.getMonth() + 1)}-${q(d.getDate())}T09:00`;
+    selected = {}; customText = {}; firstComment = {}; preview = null;
+    switchTab('compose');
+  }
+
+  function duplicatePost(id: string) {
+    const p = posts.find((x) => x.id === id);
+    if (!p) return;    title = p.title; content = p.content; link = p.link; scheduledAt = '';
+    selected = {}; customText = {}; firstComment = {};
+    for (const t of p.targets ?? []) {
+      selected[t.account_id] = true;
+      if (t.custom_text) customText[t.account_id] = t.custom_text;
+      if (t.first_comment) firstComment[t.account_id] = t.first_comment;
+    }
+    preview = null;
+    switchTab('compose');
+    notice = 'Duplicated into the composer as a draft — tweak the text (networks flag identical reposts as spam) and re-attach media, then Schedule.';
+  }
+
+  function askDelete(id: string) { confirmDelete = id; }
+
+  async function doDelete(id: string) {
+    const p = posts.find((x) => x.id === id);
+    confirmDelete = null; busy = true; error = ''; notice = '';
+    try {
+      const r = await api.deletePost(id);
+      if (r.soft_deleted && p && (p.status === 'published' || p.status === 'partial' || p.status === 'failed')) {
+        notice = 'Removed from Solomon — kept in Analytics with a deleted badge. Network copies stay put: delete them natively on each network to remove them there.';
+      }
+      await refresh();
+      if (tab === 'analytics') await loadAnalytics();
+    } catch (e: any) { error = e.message; }
+    busy = false;
+  }
+
+  $: calGrid = calYear ? monthGrid(calYear, calMonth) : [];
+  $: calByDay = groupByDay(posts);
+  $: calExtByDay = groupByDay(externalToDated(asArray(arows).filter((r) => r?.external)));
+  $: calDrafts = posts.filter((p) => !effectiveDate(p));
+  $: calDayPosts = calDay ? asArray(calByDay.get(calDay)) : [];
+  $: calDayExt = calDay ? asArray(calExtByDay.get(calDay)) : [];
 </script>
 
 <div class="mx-auto max-w-6xl p-4 md:p-6">
@@ -185,6 +277,7 @@
     <nav class="flex flex-wrap gap-2">
       <Button variant={tab === 'compose' ? 'default' : 'outline'} on:click={() => switchTab('compose')}>Compose</Button>
       <Button variant={tab === 'scheduled' ? 'default' : 'outline'} on:click={() => switchTab('scheduled')}>Queue ({posts.length})</Button>
+      <Button variant={tab === 'calendar' ? 'default' : 'outline'} on:click={() => switchTab('calendar')}>Calendar</Button>
       <Button variant={tab === 'analytics' ? 'default' : 'outline'} on:click={() => switchTab('analytics')}>Analytics</Button>
       <Button variant={tab === 'evergreen' ? 'default' : 'outline'} on:click={() => switchTab('evergreen')}>Evergreen</Button>
       <Button variant={tab === 'accounts' ? 'default' : 'outline'} on:click={() => switchTab('accounts')}>Accounts ({accounts.length})</Button>
@@ -192,6 +285,7 @@
   </header>
 
   {#if error}<div class="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</div>{/if}
+  {#if notice}<div class="mb-4 rounded-md bg-blue-50 p-3 text-sm text-blue-800">{notice}</div>{/if}
 
   {#if tab === 'compose'}
     <div class="grid gap-4 md:grid-cols-[1fr_340px]">
@@ -290,7 +384,15 @@
             <Badge tone={tone(p.status)}>{p.status}</Badge>
             {#if p.title}<span class="font-semibold">{p.title}</span>{/if}
             <span class="text-xs text-muted-foreground">{p.scheduled_at ? new Date(p.scheduled_at).toLocaleString() : 'no schedule'} · {(p.media ?? []).length} media</span>
-            <button class="ml-auto text-xs text-red-600 underline" on:click={async () => { await api.deletePost(p.id); await refresh(); }}>delete</button>
+            {#if confirmDelete === p.id}
+              <span class="ml-auto text-xs text-muted-foreground">
+                {isMovable(p) ? 'Delete forever from Solomon? Nothing published yet.' : 'Remove from Solomon? Kept in Analytics (deleted badge); network copies stay.'}
+                <button class="ml-1 font-medium text-red-600 underline" on:click={() => doDelete(p.id)}>confirm</button>
+                <button class="ml-1 underline" on:click={() => (confirmDelete = null)}>cancel</button>
+              </span>
+            {:else}
+              <button class="ml-auto text-xs text-red-600 underline" on:click={() => askDelete(p.id)}>delete</button>
+            {/if}
           </div>
           <p class="mt-2 whitespace-pre-wrap text-sm">{p.content}</p>
           {#if p.link}<a href={p.link} class="text-xs text-blue-600 underline" target="_blank" rel="noreferrer">{p.link}</a>{/if}
@@ -308,11 +410,118 @@
     </div>
   {/if}
 
+  {#if tab === 'calendar'}
+    <div class="grid gap-4 lg:grid-cols-[1fr_320px]">
+      <Card><div class="p-4">
+        <div class="mb-3 flex flex-wrap items-center gap-2">
+          <Button variant="outline" on:click={() => calShift(-1)}>‹ Prev</Button>
+          <h2 class="font-semibold">{monthLabel(calYear, calMonth)}</h2>
+          <Button variant="outline" on:click={() => calShift(1)}>Next ›</Button>
+          <Button variant="secondary" on:click={calToday}>Today</Button>
+          <span class="ml-auto text-xs text-muted-foreground">drag onto a day · click a day to compose</span>
+        </div>
+        <div class="grid grid-cols-7 gap-1 text-center text-xs font-medium text-muted-foreground">
+          {#each ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'] as wd}<div class="py-1">{wd}</div>{/each}
+        </div>
+        {#each calGrid as week}
+          <div class="grid grid-cols-7 gap-1">
+            {#each week as day}
+              {#if day}
+                {@const key = dayKey(day)}
+                {@const items = [...(calByDay.get(key) ?? []), ...(calExtByDay.get(key) ?? [])]}
+                <button
+                  class={`mb-1 min-h-16 rounded-md border p-1 text-left align-top transition-colors ${key === calDay ? 'border-primary ring-1 ring-primary' : 'border-border hover:border-primary/50'} ${key === todayKey() ? 'bg-secondary/40' : ''}`}
+                  on:click={() => { calDay = key; if (!items.length) composeOnDay(day); }}
+                  on:dragover|preventDefault
+                  on:drop={() => dropOnDay(day)}
+                >
+                  <div class="text-xs font-medium">{day.getDate()}</div>
+                  <div class="mt-0.5 flex flex-wrap items-center gap-0.5">
+                    {#each items.slice(0, 5) as p}
+                      <span title={`${p?.status ?? ''}: ${((p?.title || p?.content) ?? '').slice(0, 60)}`} class={`h-2 w-2 rounded-full ${dotClass(p?.status ?? '')}`}></span>
+                    {/each}
+                    {#if items.length > 5}<span class="text-[10px] text-muted-foreground">+{items.length - 5}</span>{/if}
+                  </div>
+                </button>
+              {:else}
+                <div class="mb-1 min-h-16 rounded-md bg-secondary/30"></div>
+              {/if}
+            {/each}
+          </div>
+        {/each}
+      </div></Card>
+      <Card><div class="space-y-3 p-4">
+        <div>
+          <h2 class="font-semibold">{calDay ? new Date(calDay + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : 'Pick a day'}</h2>
+          {#if calDay}
+            {#each calDayPosts as p}
+              <!-- svelte-ignore a11y_no_static_element_interactions -- drag has click/move fallbacks -->
+              <div draggable={isMovable(p) ? 'true' : 'false'} on:dragstart={() => (dragPost = p?.id ?? null)} on:dragend={() => (dragPost = null)} class="mt-2 rounded-md border border-border p-2">
+                <div class="flex flex-wrap items-center gap-2 text-sm">
+                  <Badge tone={tone(p?.status ?? '')}>{p?.status}</Badge>
+                  {#if p?.title}<span class="font-medium">{p.title}</span>{/if}
+                </div>
+                <p class="mt-1 text-xs text-muted-foreground">{(p?.content ?? '').slice(0, 100)}</p>
+                <div class="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                  {#if isMovable(p)}
+                    <input type="datetime-local" bind:value={calMove[p?.id ?? '']} class="w-40 rounded-md border border-border px-2 py-1 text-xs" />
+                    <button class="underline" on:click={() => movePost(p?.id ?? '', calMove[p?.id ?? ''] ? new Date(calMove[p?.id ?? '']).toISOString() : null)}>move</button>
+                  {/if}
+                  <button class="underline" on:click={() => duplicatePost(p?.id ?? '')}>duplicate</button>
+                  {#if confirmDelete === p?.id}
+                    <span class="text-muted-foreground">
+                      {isMovable(p) ? 'Delete forever?' : 'Remove (kept in Analytics)?'}
+                      <button class="ml-1 font-medium text-red-600 underline" on:click={() => doDelete(p?.id ?? '')}>confirm</button>
+                      <button class="ml-1 underline" on:click={() => (confirmDelete = null)}>cancel</button>
+                    </span>
+                  {:else}
+                    <button class="text-red-600 underline" on:click={() => askDelete(p?.id ?? '')}>delete</button>
+                  {/if}
+                </div>
+              </div>
+            {:else}
+              <p class="mt-1 text-sm text-muted-foreground">Nothing scheduled.</p>
+              <Button variant="secondary" on:click={() => composeOnDay(new Date(calDay + 'T12:00:00'))}>+ Compose this day</Button>
+            {/each}
+            {#each calDayExt as x}
+              <div class="mt-2 rounded-md border border-dashed border-border p-2 opacity-80">
+                <div class="flex flex-wrap items-center gap-2 text-sm">
+                  <Badge>outside</Badge>
+                  <span class="text-xs text-muted-foreground">posted natively — read-only</span>
+                </div>
+                {#if x.content}<p class="mt-1 text-xs text-muted-foreground">{x.content.slice(0, 100)}</p>{/if}
+              </div>
+            {/each}
+          {/if}
+        </div>
+        <div class="border-t border-border pt-3">
+          <div class="mb-1 text-sm font-medium">Unscheduled ({calDrafts.length}) <span class="font-normal text-muted-foreground">— drag onto a day</span></div>
+          {#each calDrafts as p}
+            <!-- svelte-ignore a11y_no_static_element_interactions -- drafts also have delete/move UI -->
+            <div draggable="true" on:dragstart={() => (dragPost = p?.id ?? null)} on:dragend={() => (dragPost = null)} class="mb-1 cursor-grab rounded-md border border-dashed border-border p-2 text-xs">
+              <span class="font-medium">{p?.title || (p?.content ?? '').slice(0, 60)}</span>
+              {#if confirmDelete === p?.id}
+                <span class="text-muted-foreground"> Delete forever?
+                  <button class="ml-1 font-medium text-red-600 underline" on:click={() => doDelete(p?.id ?? '')}>confirm</button>
+                  <button class="ml-1 underline" on:click={() => (confirmDelete = null)}>cancel</button>
+                </span>
+              {:else}
+                <button class="ml-1 text-red-600 underline" on:click={() => askDelete(p?.id ?? '')}>delete</button>
+              {/if}
+            </div>
+          {:else}
+            <p class="text-xs text-muted-foreground">No unscheduled posts.</p>
+          {/each}
+        </div>
+      </div></Card>
+    </div>
+  {/if}
+
   {#if tab === 'analytics'}
     <Card><div class="space-y-3 p-4">
       <div class="flex items-center gap-2">
         <h2 class="font-semibold">Analytics</h2>
-        <Button variant="secondary" on:click={async () => { const r = await api.refreshAnalytics(); if (asArray(r.errors).length) error = asArray(r.errors).join(' | '); await loadAnalytics(); }}>↻ Refresh stats</Button>
+        <Button variant="secondary" on:click={async () => { const r = await api.refreshAnalytics(); if (asArray(r.errors).length) error = asArray(r.errors).join(' | '); else if (r.discovered > 0) notice = `Found ${r.discovered} post(s) made outside Solomon — see below.`; await loadAnalytics(); }}>↻ Refresh stats</Button>
         {#if totals}<span class="text-xs text-muted-foreground">{totals.posts} published targets</span>{/if}
       </div>
       {#if totals}
@@ -332,7 +541,7 @@
                 <td class="py-1"><Badge>{r.network}</Badge></td>
                 <td>{r.account_name}</td>
                 <td>{r.views}</td><td>{r.likes}</td><td>{r.comments}</td><td>{r.shares}</td>
-                <td>{#if r.is_demo}<Badge tone="amber">demo</Badge>{/if}</td>
+                <td>{#if r.is_demo}<Badge tone="amber">demo</Badge>{/if} {#if r.deleted}<Badge>deleted</Badge>{/if} {#if r.external}<Badge>outside</Badge>{/if}</td>
               </tr>
             {:else}
               <tr><td colspan="7" class="py-2 text-muted-foreground">No published posts yet — stats appear after publishing + refresh.</td></tr>
@@ -341,6 +550,18 @@
         </table>
       </div>
       <p class="text-xs text-muted-foreground">Demo tokens show deterministic pseudo-stats. Real-token live fetch is wired for Instagram insights; other networks document the exact scope/endpoint in the README.</p>
+      {#if outside && outside.posts}
+        <div class="border-t border-border pt-3">
+          <h3 class="font-semibold">Outside Solomon <span class="text-xs font-normal text-muted-foreground">— native posts discovered on your accounts (read-only; feeds Best-time suggestions)</span></h3>
+          <div class="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+            <div class="rounded-md bg-secondary p-3 text-center"><div class="text-xl font-bold">{outside.views}</div><div class="text-xs text-muted-foreground">views</div></div>
+            <div class="rounded-md bg-secondary p-3 text-center"><div class="text-xl font-bold">{outside.likes}</div><div class="text-xs text-muted-foreground">likes</div></div>
+            <div class="rounded-md bg-secondary p-3 text-center"><div class="text-xl font-bold">{outside.comments}</div><div class="text-xs text-muted-foreground">comments</div></div>
+            <div class="rounded-md bg-secondary p-3 text-center"><div class="text-xl font-bold">{outside.shares}</div><div class="text-xs text-muted-foreground">shares</div></div>
+          </div>
+          <p class="mt-1 text-xs text-muted-foreground">{outside.posts} native post(s) · 30-day backfill, stats frozen 20 days after publishing.</p>
+        </div>
+      {/if}
     </div></Card>
   {/if}
 

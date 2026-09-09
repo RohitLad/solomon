@@ -192,6 +192,31 @@ func (h *EvergreenHandler) Delete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
+// PrunePostFromEvergreen removes a deleted post ID from every rule pool.
+// Called on hard post delete; soft-deleted (published) posts are filtered at
+// run time instead (history must survive).
+func PrunePostFromEvergreen(db *gorm.DB, postID string) {
+	var rules []models.EvergreenRule
+	db.Find(&rules)
+	for _, r := range rules {
+		var pool []string
+		if err := json.Unmarshal([]byte(r.PoolPostIDs), &pool); err != nil {
+			continue
+		}
+		kept := pool[:0]
+		for _, id := range pool {
+			if id != postID {
+				kept = append(kept, id)
+			}
+		}
+		if len(kept) == len(pool) {
+			continue
+		}
+		nb, _ := json.Marshal(kept)
+		db.Model(&r).Update("pool_post_ids", string(nb))
+	}
+}
+
 // RunDueRules republishes the next pool post for every due rule.
 // Called by the scheduler every minute.
 func RunDueRules(db *gorm.DB) int {
@@ -206,11 +231,20 @@ func RunDueRules(db *gorm.DB) int {
 		if len(pool) == 0 || len(accts) == 0 {
 			continue
 		}
-		srcID := pool[r.Cursor%len(pool)]
-		var src models.Post
-		if err := db.Preload("Media").First(&src, "id = ?", srcID).Error; err != nil {
-			continue
+		// Skip missing/soft-deleted pool posts AND advance past them (a deleted
+		// pool post used to stall the rule forever on `continue`).
+		var valid []models.Post
+		for _, pid := range pool {
+			var p models.Post
+			if err := db.Preload("Media").First(&p, "id = ? AND deleted_at IS NULL", pid).Error; err != nil {
+				continue
+			}
+			valid = append(valid, p)
 		}
+		if len(valid) == 0 {
+			continue // no runnable pool post; no writes, no churn
+		}
+		src := valid[r.Cursor%len(valid)]
 		now := time.Now()
 		// copy as a brand-new scheduled post (same files, new rows)
 		cp := models.Post{Title: src.Title, Content: src.Content, Link: src.Link,

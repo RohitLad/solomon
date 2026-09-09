@@ -19,6 +19,7 @@ func Connect(path string) (*gorm.DB, error) {
 		&models.MediaAsset{},
 		&models.AnalyticsSnapshot{},
 		&models.EvergreenRule{},
+		&models.ExternalPost{},
 	); err != nil {
 		return nil, err
 	}
