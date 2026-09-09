@@ -6,6 +6,9 @@
   import Input from './lib/components/ui/Input.svelte';
   import Textarea from './lib/components/ui/Textarea.svelte';
   import Badge from './lib/components/ui/Badge.svelte';
+  import NetBadge from './lib/components/ui/NetBadge.svelte';
+  import Avatar from './lib/components/ui/Avatar.svelte';
+  import SocialIcon from './lib/components/ui/SocialIcon.svelte';
   import { asArray, asRecord } from './lib/normalize';
   import { monthGrid, dayKey, todayKey, groupByDay, effectiveDate, isMovable, dropDateTime, monthLabel, dotClass, externalToDated } from './lib/calendar';
 
@@ -94,10 +97,13 @@
   }
 
   async function onPreview() {
-    preview = await api.preview({
-      title, content, link, media_types: mediaTypes,
-      targets: selectedIds.map((id) => ({ account_id: id, custom_text: customText[id] ?? '', first_comment: firstComment[id] ?? '' })),
-    });
+    error = '';
+    try {
+      preview = await api.preview({
+        title, content, link, media_types: mediaTypes,
+        targets: selectedIds.map((id) => ({ account_id: id, custom_text: customText[id] ?? '', first_comment: firstComment[id] ?? '' })),
+      });
+    } catch (e: any) { error = e.message; }
   }
 
   async function onVariants() {
@@ -125,7 +131,7 @@
 
   async function submit(publishNow: boolean, autoSchedule = false) {
     if (!selectedIds.length) { error = 'Select at least one account.'; return; }
-    busy = true; error = '';
+    busy = true; error = ''; notice = '';
     try {
       await api.createPost({
         title, content, link, media_ids: mediaIds,
@@ -142,46 +148,64 @@
 
   async function addAccount() {
     if (!newName) { error = 'Give the account a name.'; return; }
-    await api.addAccount({ network: newNet, name: newName, access_token: newToken || `demo-${newNet}`, extra: newExtra });
-    newName = newToken = newExtra = '';
-    await refresh();
+    error = '';
+    try {
+      await api.addAccount({ network: newNet, name: newName, access_token: newToken || `demo-${newNet}`, extra: newExtra });
+      newName = newToken = newExtra = '';
+      await refresh();
+    } catch (e: any) { error = e.message; }
   }
 
   async function connect(network: Network) {
-    const { auth_url } = await api.authUrl(network);
-    window.open(auth_url, '_blank', 'width=600,height=700');
+    error = '';
+    try {
+      const { auth_url } = await api.authUrl(network);
+      window.open(auth_url, '_blank', 'width=600,height=700');
+    } catch (e: any) { error = e.message; }
   }
 
   async function loadAnalytics() {
-    const r = await api.analytics();
-    totals = r.totals; outside = (r as any).outside ?? null; arows = asArray(r.rows);
+    try {
+      const r = await api.analytics();
+      totals = r.totals; outside = (r as any).outside ?? null; arows = asArray(r.rows);
+    } catch (e: any) { error = (e as Error).message; }
   }
 
   async function loadEvergreen() {
-    rules = asArray(await api.evergreen());
+    try {
+      rules = asArray(await api.evergreen());
+    } catch (e: any) { error = (e as Error).message; }
   }
 
   async function addRule() {
     const pool = Object.keys(rulePool).filter((k) => rulePool[k]);
     const accts = Object.keys(ruleAccts).filter((k) => ruleAccts[k]);
     if (!ruleName || !pool.length || !accts.length) { error = 'Rule needs a name, ≥1 post and ≥1 account.'; return; }
-    await api.addEvergreen({ name: ruleName, pool_post_ids: pool, account_ids: accts, interval_hours: ruleHours });
-    ruleName = ''; rulePool = {}; ruleAccts = {};
-    await loadEvergreen();
+    error = '';
+    try {
+      await api.addEvergreen({ name: ruleName, pool_post_ids: pool, account_ids: accts, interval_hours: ruleHours });
+      ruleName = ''; rulePool = {}; ruleAccts = {};
+      await loadEvergreen();
+    } catch (e: any) { error = e.message; }
   }
 
   async function onBulk(e: Event, auto: boolean) {
     const input = e.target as HTMLInputElement;
     if (!input.files?.length) return;
-    bulkResult = await api.bulkImport(input.files[0], auto);
-    await refresh();
+    error = '';
+    try {
+      bulkResult = await api.bulkImport(input.files[0], auto);
+      await refresh();
+    } catch (e: any) { error = e.message; }
   }
 
   function netLabel(id: string) { return NETWORKS.find((n) => n.id === id)?.label ?? id; }
   function tone(s: string) { return s === 'published' ? 'green' : s === 'failed' ? 'red' : s === 'partial' || s === 'scheduled' ? 'amber' : 'default'; }
+  function accent(s: string) { return s === 'published' ? 'border-l-green-500' : s === 'failed' ? 'border-l-red-500' : s === 'draft' ? 'border-l-zinc-300' : 'border-l-amber-500'; }
   function switchTab(t: typeof tab) {
     tab = t;
     notice = '';
+    confirmDelete = null;
     if (t === 'calendar') {
       if (!calYear) { const n = new Date(); calYear = n.getFullYear(); calMonth = n.getMonth(); calDay = todayKey(); }
       refresh();
@@ -203,6 +227,7 @@
   async function movePost(id: string, iso: string | null) {
     const p = posts.find((x) => x.id === id);
     if (!p || !isMovable(p)) { error = 'Only draft/scheduled posts can be moved.'; return; }
+    if (!iso) { error = 'Pick a date and time first.'; return; }
     if (iso && new Date(iso).getTime() < Date.now()) {
       if (!confirm('This date is in the past — the post will publish within seconds. Move anyway?')) return;
     }
@@ -232,7 +257,8 @@
 
   function duplicatePost(id: string) {
     const p = posts.find((x) => x.id === id);
-    if (!p) return;    title = p.title; content = p.content; link = p.link; scheduledAt = '';
+    if (!p) return;
+    title = p.title; content = p.content; link = p.link; scheduledAt = '';
     selected = {}; customText = {}; firstComment = {};
     for (const t of p.targets ?? []) {
       selected[t.account_id] = true;
@@ -270,17 +296,20 @@
 
 <div class="mx-auto max-w-6xl p-4 md:p-6">
   <header class="mb-6 flex flex-wrap items-center justify-between gap-3">
-    <div>
-      <h1 class="text-2xl font-bold">Solomon <span class="text-sm font-normal text-muted-foreground">social scheduler</span></h1>
-      <p class="text-sm text-muted-foreground">X · Facebook · Instagram · YouTube · TikTok · LinkedIn · Pinterest — Fiber + GORM + SQLite</p>
+    <div class="flex items-center gap-3">
+      <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 text-lg font-bold text-white shadow-sm">S</span>
+      <div>
+        <h1 class="text-2xl font-bold">Solomon <span class="text-sm font-normal text-muted-foreground">social scheduler</span></h1>
+        <p class="text-sm text-muted-foreground">X · Facebook · Instagram · YouTube · TikTok · LinkedIn · Pinterest</p>
+      </div>
     </div>
-    <nav class="flex flex-wrap gap-2">
-      <Button variant={tab === 'compose' ? 'default' : 'outline'} on:click={() => switchTab('compose')}>Compose</Button>
-      <Button variant={tab === 'scheduled' ? 'default' : 'outline'} on:click={() => switchTab('scheduled')}>Queue ({posts.length})</Button>
-      <Button variant={tab === 'calendar' ? 'default' : 'outline'} on:click={() => switchTab('calendar')}>Calendar</Button>
-      <Button variant={tab === 'analytics' ? 'default' : 'outline'} on:click={() => switchTab('analytics')}>Analytics</Button>
-      <Button variant={tab === 'evergreen' ? 'default' : 'outline'} on:click={() => switchTab('evergreen')}>Evergreen</Button>
-      <Button variant={tab === 'accounts' ? 'default' : 'outline'} on:click={() => switchTab('accounts')}>Accounts ({accounts.length})</Button>
+    <nav class="flex flex-wrap gap-1 rounded-lg bg-secondary p-1">
+      <Button variant={tab === 'compose' ? 'default' : 'ghost'} on:click={() => switchTab('compose')}>Compose</Button>
+      <Button variant={tab === 'scheduled' ? 'default' : 'ghost'} on:click={() => switchTab('scheduled')}>Queue ({posts.length})</Button>
+      <Button variant={tab === 'calendar' ? 'default' : 'ghost'} on:click={() => switchTab('calendar')}>Calendar</Button>
+      <Button variant={tab === 'analytics' ? 'default' : 'ghost'} on:click={() => switchTab('analytics')}>Analytics</Button>
+      <Button variant={tab === 'evergreen' ? 'default' : 'ghost'} on:click={() => switchTab('evergreen')}>Evergreen</Button>
+      <Button variant={tab === 'accounts' ? 'default' : 'ghost'} on:click={() => switchTab('accounts')}>Accounts ({accounts.length})</Button>
     </nav>
   </header>
 
@@ -337,7 +366,7 @@
             <div class="mb-1 font-semibold">Limit check (auto-remedies):</div>
             {#each preview.targets ?? [] as t}
               <div class="mb-1">
-                <Badge tone={t.plan.ok ? 'green' : 'red'}>{t.network} {t.plan.ok ? 'OK' : 'NEEDS ATTENTION'}</Badge>
+                <Badge tone={t.plan.ok ? 'green' : 'red'}><span class="inline-flex items-center gap-1"><SocialIcon network={t.network} size={12} />{t.network} {t.plan.ok ? 'OK' : 'NEEDS ATTENTION'}</span></Badge>
                 {#each t.plan.adaptations ?? [] as a}<div>· {a.detail}</div>{/each}
                 {#each t.plan.errors ?? [] as e}<div class="text-red-700">· {e}</div>{/each}
               </div>
@@ -353,7 +382,8 @@
           <div class="rounded-md border border-border p-2">
             <label class="flex cursor-pointer items-center gap-2 text-sm">
               <input type="checkbox" bind:checked={selected[a.id]} class="h-4 w-4" />
-              <Badge>{netLabel(a.network)}</Badge><span class="font-medium">{a.name}</span>
+              <Avatar name={a.name} avatarUrl={a.avatar_url} network={a.network} size={28} />
+              <NetBadge network={a.network} label={netLabel(a.network)} /><span class="font-medium">{a.name}</span>
             </label>
             {#if selected[a.id]}
               {@const lim = limitFor(a.network)}
@@ -379,7 +409,7 @@
   {#if tab === 'scheduled'}
     <div class="space-y-3">
       {#each posts as p}
-        <Card><div class="p-4">
+        <Card cls={`border-l-4 ${accent(p.status)}`}><div class="p-4">
           <div class="flex flex-wrap items-center gap-2">
             <Badge tone={tone(p.status)}>{p.status}</Badge>
             {#if p.title}<span class="font-semibold">{p.title}</span>{/if}
@@ -399,13 +429,20 @@
           <div class="mt-2 flex flex-wrap gap-2">
             {#each p.targets ?? [] as t}
               <Badge tone={t.status === 'published' ? 'green' : t.status === 'failed' ? 'red' : 'amber'}>
-                {netLabel(t.account?.network)} {t.account?.name}: {t.status}{t.error ? ` — ${t.error.slice(0, 80)}` : ''}
+                <span class="inline-flex items-center gap-1"><SocialIcon network={t.account?.network ?? ''} size={12} />{netLabel(t.account?.network)} {t.account?.name}: {t.status}{t.error ? ` — ${t.error.slice(0, 80)}` : ''}</span>
               </Badge>
             {/each}
           </div>
         </div></Card>
       {:else}
-        <p class="text-sm text-muted-foreground">Nothing scheduled yet. Compose your first post!</p>
+        <Card><div class="space-y-2 p-6 text-center">
+          <p class="font-medium">No posts yet</p>
+          <p class="text-sm text-muted-foreground">Compose your first post, or open the calendar for the big picture.</p>
+          <div class="flex justify-center gap-2 pt-1">
+            <Button on:click={() => switchTab('compose')}>Compose</Button>
+            <Button variant="secondary" on:click={() => switchTab('calendar')}>Calendar</Button>
+          </div>
+        </div></Card>
       {/each}
     </div>
   {/if}
@@ -521,7 +558,7 @@
     <Card><div class="space-y-3 p-4">
       <div class="flex items-center gap-2">
         <h2 class="font-semibold">Analytics</h2>
-        <Button variant="secondary" on:click={async () => { const r = await api.refreshAnalytics(); if (asArray(r.errors).length) error = asArray(r.errors).join(' | '); else if (r.discovered > 0) notice = `Found ${r.discovered} post(s) made outside Solomon — see below.`; await loadAnalytics(); }}>↻ Refresh stats</Button>
+        <Button variant="secondary" on:click={async () => { try { const r = await api.refreshAnalytics(); if (asArray(r.errors).length) error = asArray(r.errors).join(' | '); else if (r.discovered > 0) notice = `Found ${r.discovered} post(s) made outside Solomon — see below.`; await loadAnalytics(); } catch (e: any) { error = e.message; } }}>↻ Refresh stats</Button>
         {#if totals}<span class="text-xs text-muted-foreground">{totals.posts} published targets</span>{/if}
       </div>
       {#if totals}
@@ -538,8 +575,8 @@
           <tbody>
             {#each arows as r}
               <tr class="border-t border-border">
-                <td class="py-1"><Badge>{r.network}</Badge></td>
-                <td>{r.account_name}</td>
+                <td class="py-1"><NetBadge network={r.network} /></td>
+                <td><span class="inline-flex items-center gap-2"><Avatar name={r.account_name} avatarUrl={r.avatar_url} network={r.network} size={24} />{r.account_name}</span></td>
                 <td>{r.views}</td><td>{r.likes}</td><td>{r.comments}</td><td>{r.shares}</td>
                 <td>{#if r.is_demo}<Badge tone="amber">demo</Badge>{/if} {#if r.deleted}<Badge>deleted</Badge>{/if} {#if r.external}<Badge>outside</Badge>{/if}</td>
               </tr>
@@ -573,10 +610,10 @@
           <div class="flex items-center gap-2 rounded-md border border-border p-2 text-sm">
             <span class="font-medium">{r.name}</span>
             <span class="text-xs text-muted-foreground">every {r.interval_hours}h · next {r.next_run_at ? new Date(r.next_run_at).toLocaleString() : '—'}</span>
-            <button class="ml-auto text-xs text-red-600 underline" on:click={async () => { await api.deleteEvergreen(r.id); await loadEvergreen(); }}>remove</button>
+            <button class="ml-auto text-xs text-red-600 underline" on:click={async () => { try { await api.deleteEvergreen(r.id); await loadEvergreen(); } catch (e: any) { error = e.message; } }}>remove</button>
           </div>
         {:else}
-          <p class="text-sm text-muted-foreground">No rules yet.</p>
+          <p class="text-sm text-muted-foreground">No rules yet — name one below, pick posts + accounts, and it republishes round-robin forever.</p>
         {/each}
         <div class="border-t border-border pt-3">
           <div class="mb-2 text-sm font-medium">New rule</div>
@@ -595,7 +632,7 @@
           <div class="text-xs font-medium text-muted-foreground">Republish to:</div>
           <div class="space-y-1">
             {#each accounts as a}
-              <label class="flex items-center gap-2 text-xs"><input type="checkbox" bind:checked={ruleAccts[a.id]} /><Badge>{netLabel(a.network)}</Badge>{a.name}</label>
+              <label class="flex items-center gap-2 text-xs"><input type="checkbox" bind:checked={ruleAccts[a.id]} /><Avatar name={a.name} avatarUrl={a.avatar_url} network={a.network} size={22} /><NetBadge network={a.network} label={netLabel(a.network)} />{a.name}</label>
             {/each}
           </div>
           <Button on:click={addRule}>Save rule</Button>
@@ -626,18 +663,19 @@
       <Card><div class="space-y-3 p-4">
         <div class="flex items-center gap-2">
           <h2 class="font-semibold">Connected accounts</h2>
-          <Button variant="secondary" on:click={async () => { const r = await api.refreshTokens(); if (asArray(r.errors).length) error = asArray(r.errors).join(' | '); await refresh(); }}>↻ Refresh tokens</Button>
+          <Button variant="secondary" on:click={async () => { try { const r = await api.refreshTokens(); if (asArray(r.errors).length) error = asArray(r.errors).join(' | '); await refresh(); } catch (e: any) { error = e.message; } }}>↻ Refresh tokens</Button>
         </div>
         {#each accounts as a}
           {@const exp = a.expires_at ? new Date(a.expires_at) : null}
           {@const bad = expiringIds.has(a.id)}
           <div class="flex items-center gap-2 rounded-md border border-border p-2 text-sm">
-            <Badge>{netLabel(a.network)}</Badge><span class="font-medium">{a.name}</span>
+            <Avatar name={a.name} avatarUrl={a.avatar_url} network={a.network} size={32} />
+            <NetBadge network={a.network} label={netLabel(a.network)} /><span class="font-medium">{a.name}</span>
             {#if !exp}<Badge tone="amber">no expiry</Badge>
             {:else if exp < new Date()}<Badge tone="red">expired</Badge>
             {:else if bad}<Badge tone="amber">expires {exp.toLocaleDateString()}</Badge>{/if}
             <button class="ml-auto text-xs text-red-600 underline"
-              on:click={async () => { await api.deleteAccount(a.id); await refresh(); }}>remove</button>
+              on:click={async () => { try { await api.deleteAccount(a.id); await refresh(); } catch (e: any) { error = e.message; } }}>remove</button>
           </div>
         {:else}
           <p class="text-sm text-muted-foreground">None yet — add your first below (demo token works without API keys).</p>
@@ -649,7 +687,7 @@
         <div class="flex flex-wrap gap-1">
           {#each NETWORKS as n}
             <button on:click={() => (newNet = n.id)}
-              class={`rounded-full px-3 py-1 text-xs font-medium ${newNet === n.id ? n.color : 'bg-secondary text-secondary-foreground'}`}>{n.label}</button>
+              class={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${newNet === n.id ? `${n.color} ring-2 ring-offset-1 ring-primary/30` : 'bg-secondary text-secondary-foreground'}`}><span class={newNet === n.id ? 'rounded-full bg-white p-[1px]' : ''}><SocialIcon network={n.id} size={13} /></span>{n.label}</button>
           {/each}
         </div>
         <Input bind:value={newName} placeholder="@handle / Page / Channel name" />
@@ -670,7 +708,7 @@
     <Card><div class="mt-4 p-4 text-xs text-muted-foreground">
       <span class="font-semibold text-foreground">Limits cheat-sheet:</span>
       {#each Object.entries(limits ?? {}) as [net, l]}
-        <div><Badge>{net}</Badge> {l.max_chars} chars · {l.max_images} imgs · {l.max_videos} video(s) — {l.notes}</div>
+        <div><NetBadge network={net} /> {l.max_chars} chars · {l.max_images} imgs · {l.max_videos} video(s) — {l.notes}</div>
       {/each}
     </div></Card>
   {/if}

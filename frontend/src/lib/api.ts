@@ -4,7 +4,7 @@ const BASE = '';
 export type Network =
   | 'twitter' | 'facebook' | 'instagram' | 'youtube' | 'tiktok' | 'linkedin' | 'pinterest';
 
-export interface Account { id: string; network: Network; name: string; external_id: string; extra: string; is_active: boolean; expires_at?: string | null; }
+export interface Account { id: string; network: Network; name: string; external_id: string; extra: string; avatar_url: string; is_active: boolean; expires_at?: string | null; }
 export interface MediaAsset { id: string; post_id: string; file_path: string; media_type: 'image' | 'video'; }
 export interface PostTarget {
   id: string; account_id: string; account: Account;
@@ -18,7 +18,7 @@ export interface Post {
 }
 export interface AnalyticsRow {
   target_id: string; post_id: string; network: Network; account_name: string;
-  network_post_id: string; views: number; likes: number; comments: number;
+  avatar_url: string; network_post_id: string; views: number; likes: number; comments: number;
   shares: number; is_demo: boolean; deleted: boolean;
   external: boolean; text?: string; published_at?: string | null;
 }

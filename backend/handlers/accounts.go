@@ -53,6 +53,10 @@ func (h *AccountHandler) Create(c *fiber.Ctx) error {
 	if acct.AccessToken == "" {
 		acct.AccessToken = "demo-" + string(acct.Network)
 	}
+	// Best-effort avatar (never fails account creation; demo "" → initials UI).
+	if url, err := networks.FetchAvatar(acct.Network, acct.AccessToken, acct.Extra, acct.ExternalID); err == nil {
+		acct.AvatarURL = url
+	}
 	expires := time.Now().Add(60 * 24 * time.Hour)
 	acct.ExpiresAt = &expires
 	if err := h.DB.Create(&acct).Error; err != nil {

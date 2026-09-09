@@ -42,16 +42,18 @@ backend/
     oauth.go              # OAuth consent-URL per network
   handlers/
     accounts.go posts.go upload.go publish.go ai.go schedule.go analytics.go tokens.go bulk.go
-    discover.go           # Outside-Solomon native-post discovery worker
+    discover.go avatar.go  # Outside-Solomon discovery + profile-pic fetch workers
     lists_test.go         # ★ empty-DB contract: every list returns [], never null
     calendar_test.go      # ★ PATCH/delete/evergreen/deleted-guard contract tests
     discover_test.go      # ★ outside-discovery contract tests (dedupe/caps/freeze/union)
+    avatar_test.go        # ★ avatar serialization (account + analytics rows)
   scheduler/scheduler.go  # 15s posts + 60s evergreen + 1h tokens/discovery tickers
 frontend/
   src/lib/api.ts          # typed API client (22 methods)
   src/lib/normalize.ts    # ★ asArray/asRecord: null-safe guards for every list payload (+ tests)
+  src/lib/social.ts       # ★ brand glyphs + avatar helpers (+ tests)
   src/lib/calendar.ts     # ★ pure calendar helpers: monthGrid/groupByDay/dropDateTime (+ tests)
-  src/lib/components/ui/  # Button/Card/Input/Textarea/Badge (shadcn-svelte style)
+  src/lib/components/ui/  # Button/Card/Input/Textarea/Badge/NetBadge/SocialIcon/Avatar
   src/App.svelte          # Compose / Queue / Calendar / Analytics / Evergreen / Accounts tabs
 ```
 
@@ -128,6 +130,14 @@ GET  POST /api/evergreen   DELETE /api/evergreen/:id  (recycled every interval_h
    account (manual refresh + hourly; 30-day backfill, stats frozen after 20d),
    shown in their own Analytics section and as dimmed calendar dots, and feed
    the Best-time boost with your real history.
+
+## New in v4 — brand identity, avatars, professional polish
+
+9. **Social logos + avatars** — brand-color glyphs on every network pill and
+   badge; real profile photos (fetched at connect/refresh, initials fallback
+   with network logo badge) everywhere accounts appear.
+10. **Polish** — product mark + segmented tab bar, status-accented queue cards,
+    guided empty states, focus rings, dead-scaffold cleanup.
 
 ## Suggested next features (tell me which to build)
 

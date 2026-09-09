@@ -21,6 +21,7 @@ type TargetAnalytics struct {
 	PostID        string `json:"post_id"`
 	Network       models.Network `json:"network"`
 	AccountName   string `json:"account_name"`
+	AvatarURL     string `json:"avatar_url"`
 	NetworkPostID string `json:"network_post_id"`
 	Views   int64 `json:"views"`
 	Likes   int64 `json:"likes"`
@@ -44,11 +45,16 @@ func (h *AnalyticsHandler) List(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	var tv, tl, tc, ts int64
+	appPosts := 0
 	for _, r := range rows {
+		if r.External {
+			continue // outside rows have their own mini-totals below
+		}
 		tv += r.Views
 		tl += r.Likes
 		tc += r.Comments
 		ts += r.Shares
+		appPosts++
 	}
 	// Outside-Solomon rows carry their own mini-totals (app totals stay clean).
 	var ov, ol, oc, os int64
@@ -64,7 +70,7 @@ func (h *AnalyticsHandler) List(c *fiber.Ctx) error {
 		oposts++
 	}
 	return c.JSON(fiber.Map{
-		"totals": fiber.Map{"views": tv, "likes": tl, "comments": tc, "shares": ts, "posts": len(rows)},
+		"totals": fiber.Map{"views": tv, "likes": tl, "comments": tc, "shares": ts, "posts": appPosts},
 		"outside": fiber.Map{"views": ov, "likes": ol, "comments": oc, "shares": os, "posts": oposts},
 		"rows": rows,
 	})
@@ -86,7 +92,8 @@ func (h *AnalyticsHandler) latest() ([]TargetAnalytics, error) {
 		h.DB.Where("target_id = ?", t.ID).Order("fetched_at desc").Limit(1).Find(&snaps)
 		r := TargetAnalytics{
 			TargetID: t.ID, PostID: t.PostID,
-			Network: acct.Network, AccountName: acct.Name, NetworkPostID: t.NetworkPostID,
+			Network: acct.Network, AccountName: acct.Name, AvatarURL: acct.AvatarURL,
+			NetworkPostID: t.NetworkPostID,
 			Deleted: deleted[t.PostID],
 		}
 		if len(snaps) > 0 {
@@ -109,7 +116,8 @@ func (h *AnalyticsHandler) latest() ([]TargetAnalytics, error) {
 			h.DB.Where("external_post_id = ?", e.ID).Order("fetched_at desc").Limit(1).Find(&snaps)
 			r := TargetAnalytics{
 				TargetID: "ext:" + e.ID, Network: e.Network,
-				AccountName: byAcct[e.AccountID].Name, NetworkPostID: e.NetworkPostID,
+				AccountName: byAcct[e.AccountID].Name, AvatarURL: byAcct[e.AccountID].AvatarURL,
+				NetworkPostID: e.NetworkPostID,
 				External: true, Text: e.Text, PublishedAt: e.PublishedAt,
 			}
 			if len(snaps) > 0 {

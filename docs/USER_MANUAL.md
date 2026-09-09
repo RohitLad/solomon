@@ -102,7 +102,11 @@ Demo and live accounts can coexist — e.g. live X + demo TikTok.
 6. Click **Save account**.
 
 Add as many accounts per network as you like — e.g. three X profiles plus two
-Facebook Pages.
+Facebook Pages. Each account shows its **profile photo** (fetched when you
+connect; demo accounts and unreachable photos show an initials circle) with a
+tiny **network logo badge**, plus the network pill — so you can tell profiles
+apart at a glance everywhere: Accounts, Compose, Evergreen, Analytics, and the
+calendar.
 
 ### 5.2 Extra-field cheat sheet
 

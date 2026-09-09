@@ -100,7 +100,7 @@ smoke: ## Full API smoke test (throwaway DB + port; never touches your data).
 	cd $(BACKEND_DIR) && (PORT=$(SMOKE_PORT) DB_PATH=$(SMOKE_DB) nohup go run . > /tmp/solomon_smoke.log 2>&1 & echo $$! > /tmp/solomon_smoke.pid) && \
 	for i in $$(seq 1 30); do curl -sf $(SMOKE_URL)/api/health >/dev/null 2>&1 && break; sleep 1; done && \
 	curl -sf $(SMOKE_URL)/api/health >/dev/null || { echo "API did not start; see /tmp/solomon_smoke.log"; exit 1; } && \
-	TW=$$(curl -sf -X POST $(SMOKE_URL)/api/accounts -H 'Content-Type: application/json' -d '{"network":"twitter","name":"@smoke"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])") && \
+	TW=$$(curl -sf -X POST $(SMOKE_URL)/api/accounts -H 'Content-Type: application/json' -d '{"network":"twitter","name":"@smoke"}' | python3 -c "import json,sys;d=json.load(sys.stdin);assert 'avatar_url' in d, d;print(d['id'])") && \
 	[ -n "$$TW" ] || { echo "account create failed"; exit 1; } && \
 	echo "accounts: OK ($$TW)" && \
 	curl -sf -X POST $(SMOKE_URL)/api/ai/captions -H 'Content-Type: application/json' -d '{"text":"smoke test post","network":"twitter"}' >/dev/null && echo "captions: OK" && \

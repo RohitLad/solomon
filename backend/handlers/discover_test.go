@@ -139,6 +139,13 @@ func TestAnalyticsUnionOutside(t *testing.T) {
 	if posts, _ := out.Outside["posts"].(float64); posts != 3 {
 		t.Fatalf("outside.posts %v, want 3", out.Outside["posts"])
 	}
+	// app totals must exclude outside rows (no app posts here → zeros)
+	if posts, _ := out.Totals["posts"].(float64); posts != 0 {
+		t.Fatalf("totals.posts %v, want 0 (outside excluded)", out.Totals["posts"])
+	}
+	if views, _ := out.Totals["views"].(float64); views != 0 {
+		t.Fatalf("totals.views %v, want 0 (outside excluded)", out.Totals["views"])
+	}
 	// refresh endpoint reports discovery too
 	resp = do(t, ta.app, "POST", "/api/analytics/refresh", nil, "")
 	rbody := readBody(t, resp)

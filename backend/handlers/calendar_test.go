@@ -255,7 +255,8 @@ func TestEvergreenSkipsSoftDeletedPool(t *testing.T) {
 	}
 }
 
-func TestSchedulerQuerySkipsDeleted(t *testing.T) {	ta := newTestApp(t)
+func TestSchedulerQuerySkipsDeleted(t *testing.T) {
+	ta := newTestApp(t)
 	past := time.Now().Add(-time.Hour)
 	gone := time.Now()
 	ta.db.Create(&models.Post{Content: "ghost", Status: models.StatusScheduled, ScheduledAt: &past, DeletedAt: &gone})
@@ -376,5 +377,70 @@ func TestEvergreenMixedPoolAdvances(t *testing.T) {
 	ta.db.Where("name = ?", "mix").First(&rule)
 	if rule.Cursor != 1 {
 		t.Fatalf("cursor %d, want 1 (advanced)", rule.Cursor)
+	}
+}
+
+// PATCH with an empty object clears the date (documented null-clear → draft).
+func TestPatchEmptyClearsToDraft(t *testing.T) {
+	ta := newTestApp(t)
+	acct := createAccount(t, ta, "twitter", "@calclear")
+	id := createPost(t, ta,
+		`{"content":"unschedule me","scheduled_at":"2030-06-01T10:00:00Z","targets":[{"account_id":"`+acct+`"}]}`,
+		201)
+	resp := do(t, ta.app, "PATCH", "/api/posts/"+id,
+		strings.NewReader(`{}`), "application/json")
+	body := readBody(t, resp)
+	var out struct {
+		Status      string  `json:"status"`
+		ScheduledAt *string `json:"scheduled_at"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if resp.StatusCode != 200 || out.Status != "draft" || out.ScheduledAt != nil {
+		t.Fatalf("PATCH {} → draft with null date, got status %d (body %q)", resp.StatusCode, string(body))
+	}
+}
+
+// PATCH on a soft-deleted post is rejected (history is immutable).
+func TestPatchRejectsDeleted(t *testing.T) {
+	ta := newTestApp(t)
+	acct := createAccount(t, ta, "twitter", "@caldelpatch")
+	id := createPost(t, ta,
+		`{"content":"gone","publish_now":true,"targets":[{"account_id":"`+acct+`"}]}`,
+		201)
+	resp := do(t, ta.app, "DELETE", "/api/posts/"+id, nil, "")
+	_ = readBody(t, resp)
+	resp = do(t, ta.app, "PATCH", "/api/posts/"+id,
+		strings.NewReader(`{"scheduled_at":"2030-01-01T00:00:00Z"}`), "application/json")
+	body := readBody(t, resp)
+	if resp.StatusCode != 400 {
+		t.Fatalf("PATCH deleted: status %d, want 400 (body %q)", resp.StatusCode, string(body))
+	}
+}
+
+// Token refresh extends a due demo account offline (covers RefreshDueAccounts
+// including the avatar-update branch, which must keep the old value on "").
+func TestRefreshDueDemoAccount(t *testing.T) {
+	ta := newTestApp(t)
+	acctID := createAccount(t, ta, "linkedin", "@calrefresh")
+	past := time.Now().Add(-time.Hour)
+	if err := ta.db.Model(&models.SocialAccount{}).Where("id = ?", acctID).Update("expires_at", &past).Error; err != nil {
+		t.Fatal(err)
+	}
+	resp := do(t, ta.app, "POST", "/api/accounts/refresh", nil, "")
+	body := readBody(t, resp)
+	var out struct {
+		Refreshed int      `json:"refreshed"`
+		Errors    []string `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode: %v (body %q)", err, string(body))
+	}
+	if resp.StatusCode != 200 || out.Refreshed != 1 {
+		t.Fatalf("refresh: status %d (body %q)", resp.StatusCode, string(body))
+	}
+	var acct models.SocialAccount
+	ta.db.First(&acct, "id = ?", acctID)
+	if acct.ExpiresAt == nil || acct.ExpiresAt.Before(time.Now()) {
+		t.Fatalf("expiry not extended: %+v", acct.ExpiresAt)
 	}
 }

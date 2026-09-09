@@ -63,6 +63,10 @@ func RefreshDueAccounts(db *gorm.DB) (int, []string) {
 		if res.RefreshToken != "" {
 			updates["refresh_token"] = res.RefreshToken
 		}
+		// Refresh the avatar while we're here (stale pics fix themselves).
+		if url, err := networks.FetchAvatar(a.Network, res.AccessToken, a.Extra, a.ExternalID); err == nil && url != "" {
+			updates["avatar_url"] = url
+		}
 		exp := time.Now().Add(res.ExpiresIn)
 		if res.ExpiresIn <= 0 {
 			exp = time.Now().Add(60 * 24 * time.Hour)

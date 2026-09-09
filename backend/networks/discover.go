@@ -97,7 +97,7 @@ func demoExternalPosts(seed string, since time.Time, limit int) []ExternalCandid
 	return out
 }
 
-// getList GETs an endpoint and returns the {data:[...]} array.
+// getList GETs an endpoint and returns the {data:[...]} array (Meta-style).
 func getList(endpoint string, params url.Values, token string) ([]any, error) {
 	req, err := http.NewRequest("GET", endpoint+"?"+params.Encode(), nil)
 	if err != nil {
@@ -125,6 +125,63 @@ func getList(endpoint string, params url.Values, token string) ([]any, error) {
 		return nil, fmt.Errorf("no data array in response")
 	}
 	return out.Data, nil
+}
+
+// authedGET performs a Bearer GET and returns the raw body.
+func authedGET(endpoint string, params url.Values, token string) ([]byte, int, error) {
+	req, err := http.NewRequest("GET", endpoint+"?"+params.Encode(), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return raw, resp.StatusCode, nil
+}
+
+// getObject GETs an endpoint returning a single JSON object (X user,
+// LinkedIn /me, Pinterest user_account).
+func getObject(endpoint string, params url.Values, token string) (map[string]any, error) {
+	raw, code, err := authedGET(endpoint, params, token)
+	if err != nil {
+		return nil, err
+	}
+	if code >= 300 {
+		return nil, fmt.Errorf("%s", firstLine(string(raw), 200))
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// getItems GETs an endpoint returning an {items:[...]} array
+// (YouTube Data API, Pinterest v5).
+func getItems(endpoint string, params url.Values, token string) ([]any, error) {
+	raw, code, err := authedGET(endpoint, params, token)
+	if err != nil {
+		return nil, err
+	}
+	if code >= 300 {
+		return nil, fmt.Errorf("%s", firstLine(string(raw), 200))
+	}
+	var out struct {
+		Items []any `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	if out.Items == nil {
+		return nil, fmt.Errorf("no items array in response")
+	}
+	return out.Items, nil
 }
 
 func firstLine(s string, n int) string {
@@ -252,7 +309,7 @@ func listYouTubeVideos(token, channelID string, since time.Time, limit int) ([]E
 	// Resolve the uploads playlist (own channel when no ID configured).
 	playlist := ""
 	if channelID == "" {
-		ch, err := getList("https://www.googleapis.com/youtube/v3/channels",
+		ch, err := getItems("https://www.googleapis.com/youtube/v3/channels",
 			url.Values{"part": {"contentDetails"}, "mine": {"true"}}, token)
 		if err != nil || len(ch) == 0 {
 			return nil, fmt.Errorf("youtube channels: %v", err)
@@ -273,7 +330,7 @@ func listYouTubeVideos(token, channelID string, since time.Time, limit int) ([]E
 	if n > 50 {
 		n = 50
 	}
-	items, err := getList("https://www.googleapis.com/youtube/v3/playlistItems",
+	items, err := getItems("https://www.googleapis.com/youtube/v3/playlistItems",
 		url.Values{"part": {"contentDetails"}, "playlistId": {playlist}, "maxResults": {fmt.Sprint(n)}}, token)
 	if err != nil {
 		return nil, fmt.Errorf("youtube playlist: %v", err)
@@ -295,7 +352,7 @@ func listYouTubeVideos(token, channelID string, since time.Time, limit int) ([]E
 		return nil, nil
 	}
 	// One batched call for titles (quota-cheap).
-	vids, err := getList("https://www.googleapis.com/youtube/v3/videos",
+	vids, err := getItems("https://www.googleapis.com/youtube/v3/videos",
 		url.Values{"part": {"snippet"}, "id": {strings.Join(ids, ",")}}, token)
 	if err != nil {
 		return nil, fmt.Errorf("youtube videos: %v", err)
@@ -385,7 +442,7 @@ func listPins(token, boardID string, since time.Time, limit int) ([]ExternalCand
 	if n > 50 {
 		n = 50
 	}
-	items, err := getList("https://api.pinterest.com/v5/boards/"+boardID+"/pins",
+	items, err := getItems("https://api.pinterest.com/v5/boards/"+boardID+"/pins",
 		url.Values{"page_size": {fmt.Sprint(n)}}, token)
 	if err != nil {
 		return nil, fmt.Errorf("pinterest pins: %v", err)

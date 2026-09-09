@@ -29,8 +29,9 @@ src/
   main.ts / app.css     # mount + Tailwind + CSS-var token layer
   lib/api.ts            # typed API client (api.*) + NETWORKS pill meta
   lib/normalize.ts      # asArray/asRecord null-guards (+ normalize.test.ts)
+  lib/social.ts         # brand glyphs (SOCIAL_ICONS) + initials()/hue() (+ social.test.ts)
   lib/calendar.ts       # pure calendar helpers: monthGrid/groupByDay/dropDateTime (+ calendar.test.ts)
-  lib/components/ui/    # Button, Card, Input, Textarea, Badge
+  lib/components/ui/    # Button, Card, Input, Textarea, Badge, NetBadge, SocialIcon, Avatar
 ```
 
 ## Rule: never consume a list payload raw

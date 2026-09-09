@@ -72,13 +72,15 @@ solomon/
 │   │   ├── limits.go            # ★ limits table + ValidateAndAdapt + SplitThread + TrimTo
 │   │   ├── publisher.go         # Publish dispatch + 7 network impls + extraField parser
 │   │   ├── discover.go          # ListRecentPosts per network (Outside Solomon, best-effort)
+│   │   │                        # + authedGET/getObject/getItems shared HTTP helpers
+│   │   ├── avatar.go            # FetchAvatar per network (best-effort, never fails callers)
 │   │   ├── oauth.go             # AuthURL consent links per network
 │   │   ├── ai.go                # GenerateCaptions: offline templates → optional LLM
 │   │   ├── smart.go             # DefaultSlots best-time tables per network
 │   │   ├── stats.go             # FetchStats: demo pseudo-stats + live fetch attempts
 │   │   └── tokens.go            # RefreshToken per-network OAuth refresh grants
 │   ├── handlers/
-│   │   ├── accounts.go          # List/Create/Delete/AuthURL/Limits
+│   │   ├── accounts.go          # List/Create/Delete/AuthURL/Limits (+ avatar fetch on create)
 │   │   ├── posts.go             # List/Create/PATCH-reschedule/Preview/Delete (split semantics §3.2)
 │   │   ├── discover.go          # DiscoverExternal worker (native posts, Buffer-parity caps)
 │   │   ├── upload.go            # multipart → MediaAsset rows (+ UploadDir, /uploads static)
@@ -90,7 +92,8 @@ solomon/
 │   │   ├── bulk.go              # POST /api/posts/bulk (CSV) + evergreen CRUD + RunDueRules
 │   │   ├── lists_test.go        # ★ empty-DB contract: every list returns [], never null
 │   │   ├── calendar_test.go     # ★ PATCH/delete/evergreen/deleted-guard contract tests
-│   │   └── discover_test.go     # ★ outside-discovery contract tests (dedupe/caps/freeze/union)
+│   │   ├── discover_test.go     # ★ outside-discovery contract tests (dedupe/caps/freeze/union)
+│   │   └── avatar_test.go       # ★ avatar serialization (both: account + analytics rows)
 │   └── scheduler/scheduler.go   # Start(): 4 goroutines — 15s posts, 60s evergreen, 1h tokens+discovery
 └── frontend/
     ├── package.json / vite.config.ts   # vite + svelte plugin; dev proxy /api,/uploads → :8080
@@ -102,10 +105,14 @@ solomon/
         ├── lib/api.ts           # types (Account/Post/…) + api.* client (22 methods) + NETWORKS meta
         ├── lib/normalize.ts     # ★ asArray/asRecord null-guards for every list payload
         │                        #   (+ normalize.test.ts, run with `npm run test` / vitest)
+        ├── lib/social.ts        # ★ brand glyphs (SOCIAL_ICONS) + initials()/hue() avatar helpers
+        │                        #   (+ social.test.ts: every Network covered, helpers unit-tested)
         ├── lib/calendar.ts      # ★ pure calendar helpers: monthGrid/groupByDay/dropDateTime/dotClass
         │                        #   (+ calendar.test.ts) — App.svelte stays thin
-        ├── lib/Counter.svelte   # vite scaffold leftover (unused, safe to delete)
-        └── lib/components/ui/   # Button, Card, Input, Textarea, Badge (shadcn-style)
+        ├── lib/components/ui/   # Button (default/secondary/outline/ghost/destructive),
+        │                        #   Card (+cls passthrough), Input, Textarea, Badge,
+        │                        #   NetBadge (glyph+label pill), SocialIcon, Avatar (photo →
+        │                        #   initials fallback + network logo badge)
 ```
 
 ## 3. Backend deep dive
@@ -244,8 +251,7 @@ One concern per file; **start here when an API changes upstream.**
   local-file→public-URL promotion via `PUBLIC_MEDIA_BASE_URL` is the documented prod path.
 - **`oauth.go`** — `AuthURL(network)` builds consent URLs from env client IDs +
   `OAUTH_REDIRECT_BASE + /<network>`; scopes listed per provider (2025–26).
-- **`ai.go`** — `GenerateCaptions(text, network)`; `hashtagBank` per network
-  (8 tags IG/TikTok, 3 others); X variants pre-trimmed to 240. LLM hook:
+- **`ai.go`** — `GenerateCaptions(text, network)`; `hashtagBank` per network  (8 tags IG/TikTok, 3 others); X variants pre-trimmed to 240. LLM hook:
   `AI_API_KEY` + `AI_BASE_URL` (default OpenAI chat-completions) + `AI_MODEL`
   (default `gpt-4o-mini`), expects JSON array, tolerant fence-stripping; **any failure
   falls back to offline templates** (never 500s the UI).
@@ -265,6 +271,13 @@ One concern per file; **start here when an API changes upstream.**
   Demo = extend 60d. Real: X `.../2/oauth2/token`, FB/IG `fb_exchange_token` (60d),
   Google `oauth2.googleapis.com/token`, TikTok `.../v2/oauth/token/`, LinkedIn
   `.../oauth/v2/accessToken` (partner-app caveat), Pinterest `.../v5/oauth/token`.
+- **`avatar.go`** — `FetchAvatar(network, token, extra, externalID) → (url, err)`.
+  Demo/empty → `"", nil` (initials UI). Real paths parse each network's profile
+  endpoint; anything missing or failing is an error the caller turns into a
+  skip-note. Called at account create (best-effort, never fails creation) and
+  on token refresh (only overwrites when non-empty). UI degradation chain:
+  photo → `on:error` initials → deterministic hue — so stale URLs fix
+  themselves or vanish gracefully without backend cleanup.
 
 ## 7. Scheduler workers
 
@@ -278,7 +291,7 @@ One concern per file; **start here when an API changes upstream.**
 
 - **`lib/api.ts`** — `BASE=''`, `req<T>` (throws body text on !ok), types
   (`Network`, `Account` incl. `expires_at?`, `MediaAsset`, `PostTarget`, `Post`),
-  `api.*` for all 21 methods, `NETWORKS[{id,label,color}]` pill meta.
+  `api.*` for all 22 methods, `NETWORKS[{id,label,color}]` pill meta.
 - **`lib/normalize.ts`** — `asArray()`/`asRecord()`: every list-typed API field
   goes through these before `.map()`/`.length`/`{#each}` (see §5 contract).
   Covered by `lib/normalize.test.ts` (`npm run test`, vitest; `npm run test:watch`
@@ -299,6 +312,11 @@ One concern per file; **start here when an API changes upstream.**
   identical reposts as spam).
 - **`ui/` primitives** — prop-driven (`variant/tone`), Tailwind classes on CSS-var
   tokens from `app.css` (`--background/--primary/…` + `.dark`); add new primitives here.
+  Brand identity lives in `lib/social.ts` (`SOCIAL_ICONS`, `initials()`, `hue()`)
+  rendered by `SocialIcon` (brand color default, `monochrome` override) and
+  composed by `NetBadge` (glyph+label pill) and `Avatar` (photo → initials +
+  logo badge). Rule: never render a network name without its glyph; never
+  render an account without `Avatar`.
 - **Vite proxy** (`vite.config.ts`): `/api` + `/uploads` → `localhost:8080`, so the
   SPA works unmodified in dev and behind any same-origin prod static host.
 
